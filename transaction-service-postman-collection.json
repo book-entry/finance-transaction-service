@@ -1,0 +1,689 @@
+{
+  "info": {
+    "name": "finance-transaction-service",
+    "description": "Transaction Service (port 8082) - spec §3.2 (transactions) + §3.3 (categories). Scenario names mirror unit test method names for cross-reference with TransactionControllerTest / CategoryControllerTest / TransactionServiceImplTest / CategoryServiceImplTest.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",       "value": "http://localhost:8082", "type": "string" },
+    { "key": "userId",        "value": "user-123",              "type": "string" },
+    { "key": "accountId",     "value": "00000000-0000-0000-0000-000000000001", "type": "string" },
+    { "key": "transactionId", "value": "00000000-0000-0000-0000-000000000010", "type": "string" },
+    { "key": "categoryId",    "value": "00000000-0000-0000-0000-000000000020", "type": "string" },
+    { "key": "bulkJobId",     "value": "00000000-0000-0000-0000-000000000030", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Transactions",
+      "item": [
+        {
+          "name": "Create Transaction - Happy Path (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions", "host": ["{{baseUrl}}"], "path": ["v1", "transactions"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"{{accountId}}\",\n  \"entryType\": \"DEBIT\",\n  \"amount\": 25.50,\n  \"currency\": \"USD\",\n  \"transactionDate\": \"2026-05-23\",\n  \"reference\": \"INV-001\",\n  \"description\": \"Lunch\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+                  "var body = pm.response.json();",
+                  "pm.expect(body.success).to.eql(true);",
+                  "pm.expect(body.data.transactionId).to.be.a('string');",
+                  "pm.collectionVariables.set('transactionId', body.data.transactionId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Transaction - Missing accountId (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions", "host": ["{{baseUrl}}"], "path": ["v1", "transactions"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entryType\": \"DEBIT\",\n  \"amount\": 10.00,\n  \"currency\": \"USD\",\n  \"transactionDate\": \"2026-05-23\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('VAL_001');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Transaction - Missing X-User-Id (400)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions", "host": ["{{baseUrl}}"], "path": ["v1", "transactions"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"{{accountId}}\",\n  \"entryType\": \"DEBIT\",\n  \"amount\": 10.00,\n  \"currency\": \"USD\",\n  \"transactionDate\": \"2026-05-23\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Transaction - Unknown Account (404)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions", "host": ["{{baseUrl}}"], "path": ["v1", "transactions"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"00000000-0000-0000-0000-deadbeef0000\",\n  \"entryType\": \"DEBIT\",\n  \"amount\": 1.00,\n  \"currency\": \"USD\",\n  \"transactionDate\": \"2026-05-23\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('ACCOUNT_NOT_FOUND');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Transaction - Closed Account (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions", "host": ["{{baseUrl}}"], "path": ["v1", "transactions"] },
+            "description": "Pre-condition: {{accountId}} has been closed via Account Service DELETE /v1/accounts/{id}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"{{accountId}}\",\n  \"entryType\": \"DEBIT\",\n  \"amount\": 1.00,\n  \"currency\": \"USD\",\n  \"transactionDate\": \"2026-05-23\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', function () { pm.response.to.have.status(422); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('ACCOUNT_CLOSED');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Transactions - Happy Path (200)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions?page=1&size=50",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "50" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "pm.expect(body.data.data).to.be.an('array');",
+                  "pm.expect(body.data.page).to.eql(1);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Transactions - Date Range (200)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions?from=2026-01-01&to=2026-12-31",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions"],
+              "query": [
+                { "key": "from", "value": "2026-01-01" },
+                { "key": "to",   "value": "2026-12-31" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Transaction - Happy Path (200)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions/{{transactionId}}", "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "{{transactionId}}"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.expect(pm.response.json().data.transactionId).to.be.a('string');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Transaction - Non-Existent (404)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/00000000-0000-0000-0000-deadbeef0000",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "00000000-0000-0000-0000-deadbeef0000"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('TRANSACTION_NOT_FOUND');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Categorise - Inline Create (200, isNew=true)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{transactionId}}/category",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "{{transactionId}}", "category"]
+            },
+            "body": { "mode": "raw", "raw": "{ \"categoryName\": \"Brand New Cat\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "pm.expect(body.data.category.isNew).to.eql(true);",
+                  "pm.collectionVariables.set('categoryId', body.data.category.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Categorise - Existing By Id (200, isNew=false)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{transactionId}}/category",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "{{transactionId}}", "category"]
+            },
+            "body": { "mode": "raw", "raw": "{ \"categoryId\": \"{{categoryId}}\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.expect(pm.response.json().data.category.isNew).to.eql(false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Categorise - Both fields supplied (400)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{transactionId}}/category",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "{{transactionId}}", "category"]
+            },
+            "body": { "mode": "raw", "raw": "{ \"categoryId\": \"{{categoryId}}\", \"categoryName\": \"Also\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('INVALID_CATEGORY_REQUEST');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Transaction - Happy Path (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions/{{transactionId}}", "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "{{transactionId}}"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Transaction - Non-Existent (404)",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/00000000-0000-0000-0000-deadbeef0000",
+              "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "00000000-0000-0000-0000-deadbeef0000"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('TRANSACTION_NOT_FOUND');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Batch Insert (internal) - Happy Path (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/transactions/batch", "host": ["{{baseUrl}}"], "path": ["v1", "transactions", "batch"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bulkJobId\": \"{{bulkJobId}}\",\n  \"rows\": [\n    {\n      \"accountId\": \"{{accountId}}\",\n      \"entryType\": \"DEBIT\",\n      \"amount\": 1.00,\n      \"currency\": \"USD\",\n      \"transactionDate\": \"2026-05-23\",\n      \"reference\": \"BULK-001\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "pm.expect(body.data.insertedCount).to.be.a('number');",
+                  "pm.expect(body.data.failedRows).to.be.an('array');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "item": [
+        {
+          "name": "Create Category - Happy Path (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories", "host": ["{{baseUrl}}"], "path": ["v1", "categories"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Food & Dining\",\n  \"colourHex\": \"#4ade80\"\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set('categoryId', pm.response.json().data.categoryId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Category - Missing name (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories", "host": ["{{baseUrl}}"], "path": ["v1", "categories"] },
+            "body": { "mode": "raw", "raw": "{}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('VAL_001');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Category - Duplicate Name (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories", "host": ["{{baseUrl}}"], "path": ["v1", "categories"] },
+            "body": { "mode": "raw", "raw": "{ \"name\": \"Food & Dining\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', function () { pm.response.to.have.status(409); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NAME_CONFLICT');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Categories - Happy Path (200)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": { "raw": "{{baseUrl}}/v1/categories", "host": ["{{baseUrl}}"], "path": ["v1", "categories"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.expect(pm.response.json().data).to.be.an('array');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bulk Upsert - Mix New & Existing (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/bulk", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "bulk"] },
+            "body": { "mode": "raw", "raw": "[\n  { \"name\": \"Groceries\", \"colourHex\": \"#84cc16\" },\n  { \"name\": \"Rent\" }\n]" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+                  "var b = pm.response.json().data;",
+                  "pm.expect(b.created).to.be.a('number');",
+                  "pm.expect(b.skipped).to.be.a('number');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bulk Upsert - Empty Array (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/bulk", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "bulk"] },
+            "body": { "mode": "raw", "raw": "[]" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Category Summary - Happy Path (200)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/{{categoryId}}/summary", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "{{categoryId}}", "summary"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "var b = pm.response.json().data;",
+                  "pm.expect(b.transactionCount).to.be.a('number');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Category Summary - Non-Existent (404)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/categories/00000000-0000-0000-0000-deadbeef0000/summary",
+              "host": ["{{baseUrl}}"], "path": ["v1", "categories", "00000000-0000-0000-0000-deadbeef0000", "summary"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NOT_FOUND');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Category - Happy Path (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/{{categoryId}}", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "{{categoryId}}"] },
+            "body": { "mode": "raw", "raw": "{ \"name\": \"Renamed via Postman\", \"colourHex\": \"#3b82f6\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Category - Name Conflict (409)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "X-User-Id",    "value": "{{userId}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/{{categoryId}}", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "{{categoryId}}"] },
+            "description": "Pre-condition: another active category for {{userId}} already uses 'Groceries'.",
+            "body": { "mode": "raw", "raw": "{ \"name\": \"Groceries\" }" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', function () { pm.response.to.have.status(409); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NAME_CONFLICT');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Category - Happy Path (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": { "raw": "{{baseUrl}}/v1/categories/{{categoryId}}", "host": ["{{baseUrl}}"], "path": ["v1", "categories", "{{categoryId}}"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Category - Non-Existent (404)",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "X-User-Id", "value": "{{userId}}" } ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/categories/00000000-0000-0000-0000-deadbeef0000",
+              "host": ["{{baseUrl}}"], "path": ["v1", "categories", "00000000-0000-0000-0000-deadbeef0000"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+                  "pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NOT_FOUND');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
