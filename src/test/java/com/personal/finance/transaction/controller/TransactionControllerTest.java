@@ -1,0 +1,249 @@
+package com.personal.finance.transaction.controller;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.personal.finance.common.web.ApiResponseBodyAdvice;
+import com.personal.finance.common.web.GlobalExceptionHandler;
+import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
+import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
+import com.personal.finance.transaction.dto.response.CategoryRefResponse;
+import com.personal.finance.transaction.dto.response.TransactionPageResponse;
+import com.personal.finance.transaction.dto.response.TransactionResponse;
+import com.personal.finance.transaction.enums.EntryType;
+import com.personal.finance.transaction.enums.Source;
+import com.personal.finance.transaction.exception.AccountClosedException;
+import com.personal.finance.transaction.exception.AccountNotFoundException;
+import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
+import com.personal.finance.transaction.exception.TransactionNotFoundException;
+import com.personal.finance.transaction.service.TransactionService;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(TransactionController.class)
+@AutoConfigureMockMvc(addFilters = false)
+@Import({GlobalExceptionHandler.class, ApiResponseBodyAdvice.class})
+class TransactionControllerTest {
+
+    private static final String USER_ID = "user-789";
+    private static final String USER_ID_HEADER = "X-User-Id";
+
+    @Autowired MockMvc mvc;
+    @Autowired ObjectMapper json;
+    @MockitoBean TransactionService transactionService;
+
+    @Test
+    void createTransaction_givenValidRequest_thenReturns201() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(transactionService.createTransaction(eq(USER_ID), any())).thenReturn(sampleResponse(id, null));
+
+        mvc.perform(post("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createRequest())))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.transactionId").value(id.toString()))
+                .andExpect(jsonPath("$.data.source").value("MANUAL"));
+    }
+
+    @Test
+    void createTransaction_givenMissingAccountId_thenReturns400() throws Exception {
+        CreateTransactionRequest req = createRequest();
+        req.setAccountId(null);
+
+        mvc.perform(post("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VAL_001"));
+    }
+
+    @Test
+    void createTransaction_givenMissingUserId_thenReturns400() throws Exception {
+        mvc.perform(post("/v1/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createRequest())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createTransaction_whenAccountNotFound_thenReturns404() throws Exception {
+        UUID accountId = UUID.randomUUID();
+        when(transactionService.createTransaction(eq(USER_ID), any()))
+                .thenThrow(new AccountNotFoundException(accountId));
+
+        mvc.perform(post("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createRequest())))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("ACCOUNT_NOT_FOUND"));
+    }
+
+    @Test
+    void createTransaction_whenAccountClosed_thenReturns422() throws Exception {
+        UUID accountId = UUID.randomUUID();
+        when(transactionService.createTransaction(eq(USER_ID), any()))
+                .thenThrow(new AccountClosedException(accountId));
+
+        mvc.perform(post("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createRequest())))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error.code").value("ACCOUNT_CLOSED"));
+    }
+
+    @Test
+    void listTransactions_returns200WithPageMetadata() throws Exception {
+        when(transactionService.listTransactions(eq(USER_ID), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(TransactionPageResponse.builder()
+                        .data(List.of(sampleResponse(UUID.randomUUID(), null)))
+                        .total(1L).page(1).size(50).build());
+
+        mvc.perform(get("/v1/transactions").header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.data[0].source").value("MANUAL"));
+    }
+
+    @Test
+    void getTransaction_givenNonExistent_thenReturns404() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(transactionService.getTransaction(USER_ID, id))
+                .thenThrow(new TransactionNotFoundException("missing"));
+
+        mvc.perform(get("/v1/transactions/{id}", id).header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("TRANSACTION_NOT_FOUND"));
+    }
+
+    @Test
+    void categorise_givenBothFields_thenReturns400() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(transactionService.categorise(eq(USER_ID), eq(id), any()))
+                .thenThrow(new InvalidCategoryRequestException());
+
+        CategorisePatchRequest req = new CategorisePatchRequest();
+        req.setCategoryId(UUID.randomUUID());
+        req.setCategoryName("X");
+
+        mvc.perform(patch("/v1/transactions/{id}/category", id)
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_CATEGORY_REQUEST"));
+    }
+
+    @Test
+    void categorise_withNewCategoryName_thenReturns200WithIsNewTrue() throws Exception {
+        UUID id = UUID.randomUUID();
+        UUID catId = UUID.randomUUID();
+        CategoryRefResponse cat = CategoryRefResponse.builder().id(catId).name("New").isNew(true).build();
+        when(transactionService.categorise(eq(USER_ID), eq(id), any()))
+                .thenReturn(CategorisedTransactionResponse.builder()
+                        .transaction(sampleResponse(id, cat))
+                        .category(cat)
+                        .build());
+
+        CategorisePatchRequest req = new CategorisePatchRequest();
+        req.setCategoryName("New");
+
+        mvc.perform(patch("/v1/transactions/{id}/category", id)
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.category.isNew").value(true))
+                .andExpect(jsonPath("$.data.category.name").value("New"));
+    }
+
+    @Test
+    void deleteTransaction_givenExisting_thenReturns204() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mvc.perform(delete("/v1/transactions/{id}", id).header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void deleteTransaction_givenNonExistent_thenReturns404() throws Exception {
+        UUID id = UUID.randomUUID();
+        doThrow(new TransactionNotFoundException("missing")).when(transactionService).deleteTransaction(USER_ID, id);
+
+        mvc.perform(delete("/v1/transactions/{id}", id).header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void batch_givenValidPayload_thenReturns200WithCounts() throws Exception {
+        when(transactionService.insertBatch(eq(USER_ID), any()))
+                .thenReturn(BatchInsertResponse.builder()
+                        .insertedCount(2).failedRows(List.of()).build());
+
+        String body = "{\"bulkJobId\":\"" + UUID.randomUUID() + "\",\"rows\":[{"
+                + "\"accountId\":\"" + UUID.randomUUID() + "\","
+                + "\"entryType\":\"DEBIT\",\"amount\":1.00,\"currency\":\"USD\","
+                + "\"transactionDate\":\"2026-05-23\"}]}";
+
+        mvc.perform(post("/v1/transactions/batch")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.insertedCount").value(2));
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    private CreateTransactionRequest createRequest() {
+        CreateTransactionRequest req = new CreateTransactionRequest();
+        req.setAccountId(UUID.randomUUID());
+        req.setEntryType(EntryType.DEBIT);
+        req.setAmount(new BigDecimal("123.45"));
+        req.setCurrency("USD");
+        req.setTransactionDate(LocalDate.of(2026, 5, 23));
+        return req;
+    }
+
+    private TransactionResponse sampleResponse(UUID id, CategoryRefResponse cat) {
+        return TransactionResponse.builder()
+                .transactionId(id)
+                .accountId(UUID.randomUUID())
+                .entryType(EntryType.DEBIT)
+                .amount(new BigDecimal("10.00"))
+                .currency("USD")
+                .transactionDate(LocalDate.of(2026, 5, 23))
+                .source(Source.MANUAL)
+                .category(cat)
+                .createdAt(OffsetDateTime.now())
+                .build();
+    }
+}

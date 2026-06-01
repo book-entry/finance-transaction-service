@@ -1,0 +1,39 @@
+server:
+  port: 8082
+  servlet:
+    context-path: /transaction
+
+spring:
+  application:
+    name: finance-transaction-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/transaction_db}
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+        format_sql: false
+        jdbc:
+          time_zone: UTC
+
+app:
+  account-service:
+    base-url: ${ACCOUNT_SERVICE_URL:http://localhost:8081/account}
+    connect-timeout-ms: ${ACCOUNT_SERVICE_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${ACCOUNT_SERVICE_READ_TIMEOUT_MS:5000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
