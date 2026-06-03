@@ -5,6 +5,7 @@ import com.personal.finance.common.web.ApiResponseBodyAdvice;
 import com.personal.finance.common.web.GlobalExceptionHandler;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
@@ -200,6 +201,56 @@ class TransactionControllerTest {
 
         mvc.perform(delete("/v1/transactions/{id}", id).header(USER_ID_HEADER, USER_ID))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void balances_givenNoQueryParams_returns200WithAggregates() throws Exception {
+        UUID accountId = UUID.randomUUID();
+        when(transactionService.listBalances(eq(USER_ID), any(), any()))
+                .thenReturn(BalancesResponse.builder()
+                        .asOf(LocalDate.of(2026, 6, 2))
+                        .balances(List.of(BalancesResponse.AccountBalance.builder()
+                                .accountId(accountId)
+                                .currency("HKD")
+                                .totalCredit(new BigDecimal("56800.00"))
+                                .totalDebit(new BigDecimal("18420.50"))
+                                .balance(new BigDecimal("38379.50"))
+                                .txnCount(42L)
+                                .lastTxnDate(LocalDate.of(2026, 5, 31))
+                                .build()))
+                        .build());
+
+        mvc.perform(get("/v1/transactions/balances").header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.asOf").value("2026-06-02"))
+                .andExpect(jsonPath("$.data.balances[0].accountId").value(accountId.toString()))
+                .andExpect(jsonPath("$.data.balances[0].currency").value("HKD"))
+                .andExpect(jsonPath("$.data.balances[0].balance").value(38379.50))
+                .andExpect(jsonPath("$.data.balances[0].txnCount").value(42))
+                .andExpect(jsonPath("$.data.balances[0].lastTxnDate").value("2026-05-31"));
+    }
+
+    @Test
+    void balances_givenAsOfAndAccountIds_passesParamsToService() throws Exception {
+        UUID a1 = UUID.randomUUID();
+        UUID a2 = UUID.randomUUID();
+        LocalDate asOf = LocalDate.of(2026, 5, 1);
+        when(transactionService.listBalances(USER_ID, asOf, List.of(a1, a2)))
+                .thenReturn(BalancesResponse.builder().asOf(asOf).balances(List.of()).build());
+
+        mvc.perform(get("/v1/transactions/balances")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .param("asOf", "2026-05-01")
+                        .param("accountIds", a1.toString() + "," + a2.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.asOf").value("2026-05-01"))
+                .andExpect(jsonPath("$.data.balances").isArray());
+    }
+
+    @Test
+    void balances_givenMissingUserId_thenReturns400() throws Exception {
+        mvc.perform(get("/v1/transactions/balances"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
