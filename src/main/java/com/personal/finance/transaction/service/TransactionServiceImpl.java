@@ -1,5 +1,6 @@
 package com.personal.finance.transaction.service;
 
+import com.personal.finance.common.exception.ValidationException;
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
@@ -12,6 +13,7 @@ import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.entity.Category;
@@ -23,12 +25,18 @@ import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapper;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
+<<<<<<< Updated upstream
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+=======
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+import com.personal.finance.transaction.repository.specification.TransactionSpecifications;
+>>>>>>> Stashed changes
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,7 +44,9 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -89,25 +99,40 @@ public class TransactionServiceImpl implements TransactionService {
      * Spec §3.2 GET — paged list with optional filters. Categories are fetched
      * via a lookup map keyed on categoryId so we make one query per page
      * instead of N+1.
+     *
+     * <p>Filter mutual-exclusion: at most one of {@code categoryId},
+     * {@code categoryIds}, or {@code uncategorized=true} may be set —
+     * combining them is a 400 (the user's intent is ambiguous).
      */
     @Override
     @Transactional(readOnly = true)
-    public TransactionPageResponse listTransactions(String userId, UUID accountId, UUID categoryId,
-                                                    LocalDate from, LocalDate to, int page, int size) {
+    public TransactionPageResponse listTransactions(String userId,
+                                                    UUID accountId,
+                                                    UUID categoryId,
+                                                    Collection<UUID> categoryIds,
+                                                    boolean uncategorized,
+                                                    LocalDate from,
+                                                    LocalDate to,
+                                                    String q,
+                                                    int page,
+                                                    int size) {
+        validateCategoryFilterExclusivity(categoryId, categoryIds, uncategorized);
+
         int effectivePage = Math.max(page - 1, 0); // spec is 1-indexed
         int effectiveSize = size <= 0 ? 50 : size;
         PageRequest pageable = PageRequest.of(effectivePage, effectiveSize,
                 Sort.by(Sort.Direction.DESC, "transactionDate", "createdAt"));
 
-        Page<Transaction> result = transactionRepository.findActiveWithFilters(
-                userId, accountId, categoryId, from, to, pageable);
+        Specification<Transaction> spec = TransactionSpecifications.activeForUserWithFilters(
+                userId, accountId, categoryId, categoryIds, uncategorized, from, to, q);
+        Page<Transaction> result = transactionRepository.findAll(spec, pageable);
 
         // Cheap category lookup: one map of categoryId → Category for any
         // categoryIds in the page. Soft-deleted categories return null → null ref.
-        List<UUID> categoryIds = result.getContent().stream()
+        List<UUID> pageCategoryIds = result.getContent().stream()
                 .map(Transaction::getCategoryId).filter(java.util.Objects::nonNull).distinct().toList();
         java.util.Map<UUID, Category> categoryMap = new java.util.HashMap<>();
-        for (UUID cid : categoryIds) {
+        for (UUID cid : pageCategoryIds) {
             try {
                 categoryMap.put(cid, categoryService.loadOwnedById(userId, cid));
             } catch (Exception ignored) {
@@ -375,7 +400,57 @@ public class TransactionServiceImpl implements TransactionService {
         transactionRepository.save(entity);
     }
 
+    /**
+     * {@code GET /v1/transactions/counts} — single GROUP BY in the repository,
+     * folded in memory. The {@code null}-key row is the uncategorised bucket;
+     * the rest land in {@code byCategory} and add up (plus uncategorised) to
+     * {@code total}. Empty {@code byCategory} when the user has no
+     * categorised rows yet.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public CountsResponse listCounts(String userId) {
+        List<CategoryCountProjection> rows = transactionRepository.countActiveGroupedByCategory(userId);
+
+        long uncategorized = 0L;
+        long total = 0L;
+        Map<UUID, Long> byCategory = new LinkedHashMap<>();
+        for (CategoryCountProjection row : rows) {
+            long count = row.getCount();
+            total += count;
+            if (row.getCategoryId() == null) {
+                uncategorized = count;
+            } else {
+                byCategory.put(row.getCategoryId(), count);
+            }
+        }
+
+        return CountsResponse.builder()
+                .total(total)
+                .uncategorized(uncategorized)
+                .byCategory(byCategory)
+                .build();
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Reject combinations of the three category filters — they have
+     * incompatible semantics and silently choosing one would hide bugs in the
+     * caller. Empty {@code categoryIds} counts as "not set".
+     */
+    private void validateCategoryFilterExclusivity(UUID categoryId,
+                                                   Collection<UUID> categoryIds,
+                                                   boolean uncategorized) {
+        int set = 0;
+        if (categoryId != null) set++;
+        if (categoryIds != null && !categoryIds.isEmpty()) set++;
+        if (uncategorized) set++;
+        if (set > 1) {
+            throw new ValidationException("categoryFilter",
+                    "at most one of categoryId, categoryIds, uncategorized=true may be provided");
+        }
+    }
 
     private Transaction loadOwned(String userId, UUID id) {
         return transactionRepository.findActiveByIdAndUserId(id, userId)

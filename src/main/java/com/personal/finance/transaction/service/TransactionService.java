@@ -10,6 +10,7 @@ import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 
@@ -23,9 +24,22 @@ public interface TransactionService {
     /** Spec §3.2 POST /v1/transactions. */
     TransactionResponse createTransaction(String userId, CreateTransactionRequest request);
 
-    /** Spec §3.2 GET /v1/transactions — paged & filtered. */
-    TransactionPageResponse listTransactions(String userId, UUID accountId, UUID categoryId,
-                                             LocalDate from, LocalDate to, int page, int size);
+    /**
+     * Spec §3.2 GET /v1/transactions — paged &amp; filtered.
+     * <p>Category filter mutual-exclusion is enforced here: at most one of
+     * {@code categoryId}, {@code categoryIds}, or {@code uncategorized=true}
+     * may be set; passing more than one yields a 400.
+     */
+    TransactionPageResponse listTransactions(String userId,
+                                             UUID accountId,
+                                             UUID categoryId,
+                                             Collection<UUID> categoryIds,
+                                             boolean uncategorized,
+                                             LocalDate from,
+                                             LocalDate to,
+                                             String q,
+                                             int page,
+                                             int size);
 
     /** Spec §3.2 GET /v1/transactions/{id}. */
     TransactionResponse getTransaction(String userId, UUID transactionId);
@@ -46,9 +60,19 @@ public interface TransactionService {
      */
     BalancesResponse listBalances(String userId, LocalDate asOf, Collection<UUID> accountIds);
 
+<<<<<<< Updated upstream
     /** {@code PATCH /v1/transactions/bulk-category} — atomic bulk re-categorise. */
     BulkCategoryResponse bulkSetCategory(String userId, BulkCategoryRequest request);
 
     /** {@code DELETE /v1/transactions/bulk} — atomic bulk soft-delete. */
     BulkDeleteResponse bulkDelete(String userId, BulkDeleteRequest request);
+=======
+    /**
+     * {@code GET /v1/transactions/counts} — total / uncategorised / per-category
+     * active transaction counts for this user. Single GROUP BY in the
+     * repository; the service folds the {@code null} group into
+     * {@code uncategorized} and sums the rest into {@code total}.
+     */
+    CountsResponse listCounts(String userId);
+>>>>>>> Stashed changes
 }

@@ -2,6 +2,7 @@ package com.personal.finance.transaction.service;
 
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.client.account.AccountSummary;
+import com.personal.finance.common.exception.ValidationException;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
@@ -12,6 +13,7 @@ import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.entity.Category;
@@ -27,7 +29,11 @@ import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
+<<<<<<< Updated upstream
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+=======
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+>>>>>>> Stashed changes
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,6 +42,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -153,15 +160,86 @@ class TransactionServiceImplTest {
     void listTransactions_returnsPagedDtos() {
         Transaction tx = txEntity();
         Page<Transaction> page = new PageImpl<>(List.of(tx), Pageable.unpaged(), 1);
-        when(transactionRepository.findActiveWithFilters(eq(USER_ID), any(), any(), any(), any(), any()))
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(page);
 
-        TransactionPageResponse resp = service.listTransactions(USER_ID, null, null, null, null, 1, 50);
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, null, false, null, null, null, 1, 50);
 
         assertThat(resp.getData()).hasSize(1);
         assertThat(resp.getTotal()).isEqualTo(1L);
         assertThat(resp.getPage()).isEqualTo(1);
         assertThat(resp.getSize()).isEqualTo(50);
+    }
+
+    @Test
+    void listTransactions_givenCategoryIdAndUncategorized_thenThrowsValidationException() {
+        assertThatThrownBy(() -> service.listTransactions(
+                USER_ID, null, UUID.randomUUID(), null, true, null, null, null, 1, 50))
+                .isInstanceOf(ValidationException.class);
+        verify(transactionRepository, never()).findAll(any(Specification.class), any(Pageable.class));
+    }
+
+    @Test
+    void listTransactions_givenCategoryIdsAndCategoryId_thenThrowsValidationException() {
+        assertThatThrownBy(() -> service.listTransactions(
+                USER_ID, null, UUID.randomUUID(), List.of(UUID.randomUUID()), false, null, null, null, 1, 50))
+                .isInstanceOf(ValidationException.class);
+    }
+
+    @Test
+    void listTransactions_givenEmptyCategoryIdsAlongsideUncategorized_thenAllowed() {
+        Page<Transaction> page = new PageImpl<>(List.of(), Pageable.unpaged(), 0);
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(page);
+
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, List.of(), true, null, null, null, 1, 50);
+
+        assertThat(resp.getTotal()).isZero();
+    }
+
+    @Test
+    void listTransactions_givenSearchQuery_passesItThroughToSpec() {
+        Page<Transaction> page = new PageImpl<>(List.of(txEntity()), Pageable.unpaged(), 1);
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(page);
+
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, null, false, null, null, "ParknShop", 1, 50);
+
+        assertThat(resp.getData()).hasSize(1);
+        verify(transactionRepository).findAll(any(Specification.class), any(Pageable.class));
+    }
+
+    // ── listCounts ───────────────────────────────────────────────────────
+
+    @Test
+    void listCounts_foldsNullGroupIntoUncategorizedAndSumsTotal() {
+        UUID catA = UUID.randomUUID();
+        UUID catB = UUID.randomUUID();
+        when(transactionRepository.countActiveGroupedByCategory(USER_ID))
+                .thenReturn(List.of(
+                        categoryCount(null, 47L),
+                        categoryCount(catA, 312L),
+                        categoryCount(catB, 100L)));
+
+        CountsResponse resp = service.listCounts(USER_ID);
+
+        assertThat(resp.getTotal()).isEqualTo(459L);
+        assertThat(resp.getUncategorized()).isEqualTo(47L);
+        assertThat(resp.getByCategory()).containsEntry(catA, 312L).containsEntry(catB, 100L);
+    }
+
+    @Test
+    void listCounts_givenNoRows_returnsZeroAndEmptyMap() {
+        when(transactionRepository.countActiveGroupedByCategory(USER_ID)).thenReturn(List.of());
+
+        CountsResponse resp = service.listCounts(USER_ID);
+
+        assertThat(resp.getTotal()).isZero();
+        assertThat(resp.getUncategorized()).isZero();
+        assertThat(resp.getByCategory()).isEmpty();
     }
 
     // ── getTransaction ───────────────────────────────────────────────────
@@ -584,10 +662,17 @@ class TransactionServiceImplTest {
         return AccountSummary.builder().accountId(id).status(AccountStatus.ACTIVE).currency("USD").build();
     }
 
+<<<<<<< Updated upstream
     private ActiveTransactionLookup activeLookup(UUID transactionId, UUID categoryId) {
         return new ActiveTransactionLookup() {
             @Override public UUID getTransactionId() { return transactionId; }
             @Override public UUID getCategoryId() { return categoryId; }
+=======
+    private CategoryCountProjection categoryCount(UUID categoryId, long count) {
+        return new CategoryCountProjection() {
+            @Override public UUID getCategoryId() { return categoryId; }
+            @Override public long getCount() { return count; }
+>>>>>>> Stashed changes
         };
     }
 

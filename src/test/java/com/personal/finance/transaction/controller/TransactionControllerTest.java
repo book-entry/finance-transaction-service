@@ -3,8 +3,12 @@ package com.personal.finance.transaction.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personal.finance.common.web.ApiResponseBodyAdvice;
 import com.personal.finance.common.web.GlobalExceptionHandler;
+<<<<<<< Updated upstream
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
+=======
+import com.personal.finance.common.exception.ValidationException;
+>>>>>>> Stashed changes
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
@@ -13,6 +17,7 @@ import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.enums.EntryType;
@@ -38,6 +43,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -127,7 +133,8 @@ class TransactionControllerTest {
 
     @Test
     void listTransactions_returns200WithPageMetadata() throws Exception {
-        when(transactionService.listTransactions(eq(USER_ID), any(), any(), any(), any(), anyInt(), anyInt()))
+        when(transactionService.listTransactions(eq(USER_ID), any(), any(), any(), anyBoolean(),
+                                                 any(), any(), any(), anyInt(), anyInt()))
                 .thenReturn(TransactionPageResponse.builder()
                         .data(List.of(sampleResponse(UUID.randomUUID(), null)))
                         .total(1L).page(1).size(50).build());
@@ -136,6 +143,60 @@ class TransactionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.data[0].source").value("MANUAL"));
+    }
+
+    @Test
+    void listTransactions_givenSearchAndCategoryIds_passesParamsThrough() throws Exception {
+        UUID c1 = UUID.randomUUID();
+        UUID c2 = UUID.randomUUID();
+        when(transactionService.listTransactions(eq(USER_ID), any(), any(),
+                eq(List.of(c1, c2)), eq(false), any(), any(), eq("ParknShop"), anyInt(), anyInt()))
+                .thenReturn(TransactionPageResponse.builder()
+                        .data(List.of()).total(0L).page(1).size(50).build());
+
+        mvc.perform(get("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .param("categoryIds", c1.toString() + "," + c2.toString())
+                        .param("q", "ParknShop"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    @Test
+    void listTransactions_whenServiceRejectsFilterMix_returns400() throws Exception {
+        when(transactionService.listTransactions(eq(USER_ID), any(), any(), any(), anyBoolean(),
+                                                 any(), any(), any(), anyInt(), anyInt()))
+                .thenThrow(new ValidationException("categoryFilter", "mutually exclusive"));
+
+        mvc.perform(get("/v1/transactions")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .param("categoryId", UUID.randomUUID().toString())
+                        .param("uncategorized", "true"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VAL_001"));
+    }
+
+    @Test
+    void counts_returns200WithTotalUncategorizedAndByCategory() throws Exception {
+        UUID catA = UUID.randomUUID();
+        when(transactionService.listCounts(USER_ID))
+                .thenReturn(CountsResponse.builder()
+                        .total(1843L)
+                        .uncategorized(47L)
+                        .byCategory(java.util.Map.of(catA, 312L))
+                        .build());
+
+        mvc.perform(get("/v1/transactions/counts").header(USER_ID_HEADER, USER_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1843))
+                .andExpect(jsonPath("$.data.uncategorized").value(47))
+                .andExpect(jsonPath("$.data.byCategory." + catA.toString()).value(312));
+    }
+
+    @Test
+    void counts_givenMissingUserId_returns400() throws Exception {
+        mvc.perform(get("/v1/transactions/counts"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
