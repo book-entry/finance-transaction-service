@@ -8,6 +8,7 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -24,16 +25,14 @@ import com.personal.finance.transaction.enums.Source;
 import com.personal.finance.transaction.exception.AccountClosedException;
 import com.personal.finance.transaction.exception.AccountNotFoundException;
 import com.personal.finance.transaction.exception.CategoryNotFoundException;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
-<<<<<<< Updated upstream
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
-=======
 import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
->>>>>>> Stashed changes
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -355,6 +354,115 @@ class TransactionServiceImplTest {
                 .isInstanceOf(CategoryNotFoundException.class);
     }
 
+    // ── updateTransaction (PATCH /{id}) ──────────────────────────────────
+
+    @Test
+    void updateTransaction_givenOnlyDescription_appliesAndKeepsOtherFields() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("old desc");
+        tx.setReference("ref-1");
+        tx.setTransactionDate(LocalDate.of(2026, 5, 1));
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("Starbucks Causeway");
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("Starbucks Causeway");
+        assertThat(resp.getReference()).isEqualTo("ref-1");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 1));
+    }
+
+    @Test
+    void updateTransaction_givenAllEditableFields_appliesAll() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("new desc");
+        req.setReference("INV-001");
+        req.setTransactionDate(LocalDate.of(2026, 5, 24));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("new desc");
+        assertThat(resp.getReference()).isEqualTo("INV-001");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 24));
+    }
+
+    @Test
+    void updateTransaction_givenEmptyBody_returnsCurrentRow() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("unchanged");
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, new UpdateTransactionRequest());
+
+        assertThat(resp.getDescription()).isEqualTo("unchanged");
+    }
+
+    @Test
+    void updateTransaction_whenAccountIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAccountId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+        verify(transactionRepository, never()).findActiveByIdAndUserId(any(), anyString());
+        verify(transactionRepository, never()).save(any());
+    }
+
+    @Test
+    void updateTransaction_whenAmountSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAmount(new BigDecimal("99.00"));
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenCategoryIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setCategoryId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenEntryTypeAndCurrencyBothSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setEntryType(EntryType.CREDIT);
+        req.setCurrency("USD");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_givenNonExistentId_throws404() {
+        UUID id = UUID.randomUUID();
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.empty());
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("anything");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, id, req))
+                .isInstanceOf(TransactionNotFoundException.class);
+        verify(transactionRepository, never()).save(any());
+    }
+
     // ── deleteTransaction ────────────────────────────────────────────────
 
     @Test
@@ -630,6 +738,136 @@ class TransactionServiceImplTest {
         assertThat(resp.getFailedRows().get(0).getRowIndex()).isEqualTo(1);
     }
 
+    @Test
+    void insertBatch_rowWithCategoryId_thenLoadsExistingAndPersistsWithThatId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        UUID catId = UUID.randomUUID();
+        req.getRows().get(0).setCategoryId(catId);
+
+        Category cat = Category.builder().categoryId(catId).name("Existing").userId(USER_ID).build();
+        when(categoryService.loadOwnedById(USER_ID, catId)).thenReturn(cat);
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(catId);
+        verify(categoryService, never()).resolveByName(anyString(), anyString());
+    }
+
+    @Test
+    void insertBatch_rowWithExistingCategoryName_thenReusesExistingId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        req.getRows().get(0).setCategoryName("Groceries");
+
+        UUID existingId = UUID.randomUUID();
+        Category existing = Category.builder().categoryId(existingId).name("Groceries").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(existing, false));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(existingId);
+    }
+
+    @Test
+    void insertBatch_rowWithNewCategoryName_thenResolveByNameCreatesAndPersistsNewId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        req.getRows().get(0).setCategoryName("Pet care");
+
+        UUID newId = UUID.randomUUID();
+        Category created = Category.builder().categoryId(newId).name("Pet care").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Pet care"))
+                .thenReturn(new CategoryService.ResolvedCategory(created, true));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(newId);
+    }
+
+    @Test
+    void insertBatch_mixedBatch_thenEachRowResolvedIndependently() {
+        BatchTransactionsRequest req = batchRequest(3);
+        UUID existingByIdCat = UUID.randomUUID();
+        UUID existingByNameCat = UUID.randomUUID();
+        UUID newlyCreatedCat = UUID.randomUUID();
+        req.getRows().get(0).setCategoryId(existingByIdCat);
+        req.getRows().get(1).setCategoryName("Groceries");
+        req.getRows().get(2).setCategoryName("Pet care");
+
+        when(categoryService.loadOwnedById(USER_ID, existingByIdCat))
+                .thenReturn(Category.builder().categoryId(existingByIdCat).name("Salary").userId(USER_ID).build());
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(
+                        Category.builder().categoryId(existingByNameCat).name("Groceries").userId(USER_ID).build(), false));
+        when(categoryService.resolveByName(USER_ID, "Pet care"))
+                .thenReturn(new CategoryService.ResolvedCategory(
+                        Category.builder().categoryId(newlyCreatedCat).name("Pet care").userId(USER_ID).build(), true));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(3);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository, org.mockito.Mockito.times(3)).save(captor.capture());
+        assertThat(captor.getAllValues()).extracting(Transaction::getCategoryId)
+                .containsExactly(existingByIdCat, existingByNameCat, newlyCreatedCat);
+    }
+
+    @Test
+    void insertBatch_rowWithBothCategoryFields_thenThatRowFails_otherRowsCommit() {
+        BatchTransactionsRequest req = batchRequest(3);
+        UUID goodCat = UUID.randomUUID();
+        req.getRows().get(0).setCategoryName("Groceries");
+        req.getRows().get(1).setCategoryId(UUID.randomUUID());
+        req.getRows().get(1).setCategoryName("BadBoth");
+        req.getRows().get(2).setCategoryId(goodCat);
+
+        Category groceries = Category.builder().categoryId(UUID.randomUUID()).name("Groceries").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(groceries, false));
+        when(categoryService.loadOwnedById(USER_ID, goodCat))
+                .thenReturn(Category.builder().categoryId(goodCat).name("Salary").userId(USER_ID).build());
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(2);
+        assertThat(resp.getFailedRows()).hasSize(1);
+        assertThat(resp.getFailedRows().get(0).getRowIndex()).isEqualTo(1);
+    }
+
+    @Test
+    void insertBatch_rowWithNeitherCategoryField_thenInsertsWithNullCategoryId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        // batchRequest does not set categoryId or categoryName — no-category case.
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isNull();
+        verify(categoryService, never()).loadOwnedById(anyString(), any());
+        verify(categoryService, never()).resolveByName(anyString(), anyString());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private CreateTransactionRequest txRequest() {
@@ -662,17 +900,17 @@ class TransactionServiceImplTest {
         return AccountSummary.builder().accountId(id).status(AccountStatus.ACTIVE).currency("USD").build();
     }
 
-<<<<<<< Updated upstream
     private ActiveTransactionLookup activeLookup(UUID transactionId, UUID categoryId) {
         return new ActiveTransactionLookup() {
             @Override public UUID getTransactionId() { return transactionId; }
             @Override public UUID getCategoryId() { return categoryId; }
-=======
+        };
+    }
+
     private CategoryCountProjection categoryCount(UUID categoryId, long count) {
         return new CategoryCountProjection() {
             @Override public UUID getCategoryId() { return categoryId; }
             @Override public long getCount() { return count; }
->>>>>>> Stashed changes
         };
     }
 

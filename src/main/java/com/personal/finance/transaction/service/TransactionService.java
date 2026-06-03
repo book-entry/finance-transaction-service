@@ -5,6 +5,7 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -47,6 +48,14 @@ public interface TransactionService {
     /** Spec §3.2 PATCH /v1/transactions/{id}/category. */
     CategorisedTransactionResponse categorise(String userId, UUID transactionId, CategorisePatchRequest request);
 
+    /**
+     * {@code PATCH /v1/transactions/{id}} — partial update of the editable
+     * fields ({@code description}, {@code reference}, {@code transactionDate}).
+     * Throws {@code ImmutableFieldUpdateException} (422) if any immutable
+     * field is set in the body.
+     */
+    TransactionResponse updateTransaction(String userId, UUID transactionId, UpdateTransactionRequest request);
+
     /** Spec §3.2 DELETE /v1/transactions/{id}. */
     void deleteTransaction(String userId, UUID transactionId);
 
@@ -60,13 +69,12 @@ public interface TransactionService {
      */
     BalancesResponse listBalances(String userId, LocalDate asOf, Collection<UUID> accountIds);
 
-<<<<<<< Updated upstream
     /** {@code PATCH /v1/transactions/bulk-category} — atomic bulk re-categorise. */
     BulkCategoryResponse bulkSetCategory(String userId, BulkCategoryRequest request);
 
     /** {@code DELETE /v1/transactions/bulk} — atomic bulk soft-delete. */
     BulkDeleteResponse bulkDelete(String userId, BulkDeleteRequest request);
-=======
+
     /**
      * {@code GET /v1/transactions/counts} — total / uncategorised / per-category
      * active transaction counts for this user. Single GROUP BY in the
@@ -74,5 +82,4 @@ public interface TransactionService {
      * {@code uncategorized} and sums the rest into {@code total}.
      */
     CountsResponse listCounts(String userId);
->>>>>>> Stashed changes
 }
