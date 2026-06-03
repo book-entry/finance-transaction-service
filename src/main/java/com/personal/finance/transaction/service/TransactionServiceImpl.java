@@ -6,6 +6,7 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -18,12 +19,18 @@ import com.personal.finance.transaction.entity.Category;
 import com.personal.finance.transaction.entity.Transaction;
 import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.enums.Source;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapper;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+<<<<<<< Updated upstream
+=======
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+import com.personal.finance.transaction.repository.specification.TransactionSpecifications;
+>>>>>>> Stashed changes
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -188,6 +195,35 @@ public class TransactionServiceImpl implements TransactionService {
                 .transaction(transactionMapper.toResponse(saved, ref))
                 .category(ref)
                 .build();
+    }
+
+    /**
+     * {@code PATCH /v1/transactions/{id}} — partial update. Editable fields
+     * are applied only if non-null; immutable fields appearing in the body
+     * trigger a 422 before any mutation. Category changes still go through
+     * {@code PATCH /{id}/category} (whose inline-create flow doesn't
+     * generalise to a plain update).
+     */
+    @Override
+    @Transactional
+    public TransactionResponse updateTransaction(String userId, UUID transactionId,
+                                                 UpdateTransactionRequest request) {
+        rejectImmutableFields(request);
+
+        Transaction tx = loadOwned(userId, transactionId);
+        if (request.getDescription() != null) {
+            tx.setDescription(request.getDescription());
+        }
+        if (request.getReference() != null) {
+            tx.setReference(request.getReference());
+        }
+        if (request.getTransactionDate() != null) {
+            tx.setTransactionDate(request.getTransactionDate());
+        }
+        Transaction saved = transactionRepository.save(tx);
+
+        log.info("Transaction updated uid=[{}] id=[{}]", userId, transactionId);
+        return transactionMapper.toResponse(saved, currentCategoryRef(userId, saved));
     }
 
     @Override
@@ -377,6 +413,59 @@ public class TransactionServiceImpl implements TransactionService {
 
     // ── helpers ──────────────────────────────────────────────────────────
 
+<<<<<<< Updated upstream
+=======
+    /**
+     * Reject combinations of the three category filters — they have
+     * incompatible semantics and silently choosing one would hide bugs in the
+     * caller. Empty {@code categoryIds} counts as "not set".
+     */
+    private void validateCategoryFilterExclusivity(UUID categoryId,
+                                                   Collection<UUID> categoryIds,
+                                                   boolean uncategorized) {
+        int set = 0;
+        if (categoryId != null) set++;
+        if (categoryIds != null && !categoryIds.isEmpty()) set++;
+        if (uncategorized) set++;
+        if (set > 1) {
+            throw new ValidationException("categoryFilter",
+                    "at most one of categoryId, categoryIds, uncategorized=true may be provided");
+        }
+    }
+
+    /**
+     * Reject any non-null immutable field — accountId/entryType/amount/
+     * currency/source per double-entry hygiene, plus categoryId/categoryName
+     * because category changes have their own endpoint with inline-create
+     * semantics that don't generalise.
+     */
+    private void rejectImmutableFields(UpdateTransactionRequest request) {
+        List<String> attempted = new ArrayList<>();
+        if (request.getAccountId() != null) attempted.add("accountId");
+        if (request.getEntryType() != null) attempted.add("entryType");
+        if (request.getAmount() != null) attempted.add("amount");
+        if (request.getCurrency() != null) attempted.add("currency");
+        if (request.getSource() != null) attempted.add("source");
+        if (request.getCategoryId() != null) attempted.add("categoryId");
+        if (request.getCategoryName() != null) attempted.add("categoryName");
+        if (!attempted.isEmpty()) {
+            throw new ImmutableFieldUpdateException(attempted);
+        }
+    }
+
+    /** Re-resolves the category ref for a saved transaction; soft-deleted → null. */
+    private CategoryRefResponse currentCategoryRef(String userId, Transaction tx) {
+        if (tx.getCategoryId() == null) return null;
+        try {
+            Category cat = categoryService.loadOwnedById(userId, tx.getCategoryId());
+            return CategoryRefResponse.builder()
+                    .id(cat.getCategoryId()).name(cat.getName()).isNew(false).build();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+>>>>>>> Stashed changes
     private Transaction loadOwned(String userId, UUID id) {
         return transactionRepository.findActiveByIdAndUserId(id, userId)
                 .orElseThrow(() -> new TransactionNotFoundException(

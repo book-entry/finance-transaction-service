@@ -7,6 +7,7 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -22,12 +23,17 @@ import com.personal.finance.transaction.enums.Source;
 import com.personal.finance.transaction.exception.AccountClosedException;
 import com.personal.finance.transaction.exception.AccountNotFoundException;
 import com.personal.finance.transaction.exception.CategoryNotFoundException;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+<<<<<<< Updated upstream
+=======
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+>>>>>>> Stashed changes
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -275,6 +281,115 @@ class TransactionServiceImplTest {
 
         assertThatThrownBy(() -> service.categorise(USER_ID, id, req))
                 .isInstanceOf(CategoryNotFoundException.class);
+    }
+
+    // ── updateTransaction (PATCH /{id}) ──────────────────────────────────
+
+    @Test
+    void updateTransaction_givenOnlyDescription_appliesAndKeepsOtherFields() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("old desc");
+        tx.setReference("ref-1");
+        tx.setTransactionDate(LocalDate.of(2026, 5, 1));
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("Starbucks Causeway");
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("Starbucks Causeway");
+        assertThat(resp.getReference()).isEqualTo("ref-1");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 1));
+    }
+
+    @Test
+    void updateTransaction_givenAllEditableFields_appliesAll() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("new desc");
+        req.setReference("INV-001");
+        req.setTransactionDate(LocalDate.of(2026, 5, 24));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("new desc");
+        assertThat(resp.getReference()).isEqualTo("INV-001");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 24));
+    }
+
+    @Test
+    void updateTransaction_givenEmptyBody_returnsCurrentRow() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("unchanged");
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, new UpdateTransactionRequest());
+
+        assertThat(resp.getDescription()).isEqualTo("unchanged");
+    }
+
+    @Test
+    void updateTransaction_whenAccountIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAccountId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+        verify(transactionRepository, never()).findActiveByIdAndUserId(any(), anyString());
+        verify(transactionRepository, never()).save(any());
+    }
+
+    @Test
+    void updateTransaction_whenAmountSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAmount(new BigDecimal("99.00"));
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenCategoryIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setCategoryId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenEntryTypeAndCurrencyBothSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setEntryType(EntryType.CREDIT);
+        req.setCurrency("USD");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_givenNonExistentId_throws404() {
+        UUID id = UUID.randomUUID();
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.empty());
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("anything");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, id, req))
+                .isInstanceOf(TransactionNotFoundException.class);
+        verify(transactionRepository, never()).save(any());
     }
 
     // ── deleteTransaction ────────────────────────────────────────────────
@@ -588,6 +703,16 @@ class TransactionServiceImplTest {
         return new ActiveTransactionLookup() {
             @Override public UUID getTransactionId() { return transactionId; }
             @Override public UUID getCategoryId() { return categoryId; }
+<<<<<<< Updated upstream
+=======
+        };
+    }
+
+    private CategoryCountProjection categoryCount(UUID categoryId, long count) {
+        return new CategoryCountProjection() {
+            @Override public UUID getCategoryId() { return categoryId; }
+            @Override public long getCount() { return count; }
+>>>>>>> Stashed changes
         };
     }
 

@@ -5,6 +5,7 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -103,6 +104,19 @@ public class TransactionController {
     public TransactionResponse get(@RequestHeader(USER_ID_HEADER) String userId,
                                    @PathVariable("id") UUID id) {
         return transactionService.getTransaction(userId, id);
+    }
+
+    /**
+     * {@code PATCH /v1/transactions/{id}} — partial update of editable fields
+     * (description, reference, transactionDate). 422 if any immutable field
+     * (accountId/entryType/amount/currency/source/categoryId/categoryName)
+     * appears in the body.
+     */
+    @PatchMapping("/{id}")
+    public TransactionResponse update(@RequestHeader(USER_ID_HEADER) String userId,
+                                      @PathVariable("id") UUID id,
+                                      @Valid @RequestBody UpdateTransactionRequest request) {
+        return transactionService.updateTransaction(userId, id, request);
     }
 
     /** Spec §3.2 — {@code PATCH /v1/transactions/{id}/category}. */

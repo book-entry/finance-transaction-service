@@ -2,11 +2,13 @@ package com.personal.finance.transaction.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personal.finance.common.web.ApiResponseBodyAdvice;
+import com.personal.finance.common.exception.ValidationException;
 import com.personal.finance.common.web.GlobalExceptionHandler;
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
@@ -19,6 +21,7 @@ import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.enums.Source;
 import com.personal.finance.transaction.exception.AccountClosedException;
 import com.personal.finance.transaction.exception.AccountNotFoundException;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.service.TransactionService;
@@ -188,6 +191,72 @@ class TransactionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.category.isNew").value(true))
                 .andExpect(jsonPath("$.data.category.name").value("New"));
+    }
+
+    @Test
+    void update_givenEditableFields_returns200WithUpdatedRow() throws Exception {
+        UUID id = UUID.randomUUID();
+        TransactionResponse updated = TransactionResponse.builder()
+                .transactionId(id)
+                .accountId(UUID.randomUUID())
+                .entryType(EntryType.DEBIT)
+                .amount(new BigDecimal("10.00"))
+                .currency("USD")
+                .transactionDate(LocalDate.of(2026, 5, 24))
+                .description("Starbucks Causeway")
+                .reference("INV-001")
+                .source(Source.MANUAL)
+                .createdAt(OffsetDateTime.now())
+                .build();
+        when(transactionService.updateTransaction(eq(USER_ID), eq(id), any())).thenReturn(updated);
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("Starbucks Causeway");
+        req.setReference("INV-001");
+        req.setTransactionDate(LocalDate.of(2026, 5, 24));
+
+        mvc.perform(patch("/v1/transactions/{id}", id)
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.description").value("Starbucks Causeway"))
+                .andExpect(jsonPath("$.data.reference").value("INV-001"))
+                .andExpect(jsonPath("$.data.transactionDate").value("2026-05-24"));
+    }
+
+    @Test
+    void update_whenServiceRejectsImmutableField_returns422() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(transactionService.updateTransaction(eq(USER_ID), eq(id), any()))
+                .thenThrow(new ImmutableFieldUpdateException(List.of("accountId")));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAccountId(UUID.randomUUID());
+
+        mvc.perform(patch("/v1/transactions/{id}", id)
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error.code").value("BUS_001"));
+    }
+
+    @Test
+    void update_whenTransactionMissing_returns404() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(transactionService.updateTransaction(eq(USER_ID), eq(id), any()))
+                .thenThrow(new TransactionNotFoundException("missing"));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("anything");
+
+        mvc.perform(patch("/v1/transactions/{id}", id)
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("TRANSACTION_NOT_FOUND"));
     }
 
     @Test

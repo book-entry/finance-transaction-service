@@ -4,8 +4,12 @@ import com.personal.finance.transaction.entity.Transaction;
 import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+<<<<<<< Updated upstream
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+=======
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+>>>>>>> Stashed changes
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
