@@ -5,11 +5,13 @@ import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.service.TransactionService;
@@ -51,16 +53,26 @@ public class TransactionController {
         return transactionService.createTransaction(userId, request);
     }
 
-    /** Spec §3.2 — {@code GET /v1/transactions}. */
+    /**
+     * Spec §3.2 — {@code GET /v1/transactions}.
+     * <p>Filter knobs: {@code accountId}, {@code from/to} (date range), and a
+     * single category filter chosen from {@code categoryId} / {@code categoryIds}
+     * / {@code uncategorized=true} (mutually exclusive — 400 otherwise).
+     * {@code q} is a case-insensitive LIKE on description + reference.
+     */
     @GetMapping
     public TransactionPageResponse list(@RequestHeader(USER_ID_HEADER) String userId,
                                         @RequestParam(required = false) UUID accountId,
                                         @RequestParam(required = false) UUID categoryId,
+                                        @RequestParam(required = false) List<UUID> categoryIds,
+                                        @RequestParam(required = false, defaultValue = "false") boolean uncategorized,
                                         @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
                                         @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+                                        @RequestParam(required = false) String q,
                                         @RequestParam(required = false, defaultValue = "1") int page,
                                         @RequestParam(required = false, defaultValue = "50") int size) {
-        return transactionService.listTransactions(userId, accountId, categoryId, from, to, page, size);
+        return transactionService.listTransactions(
+                userId, accountId, categoryId, categoryIds, uncategorized, from, to, q, page, size);
     }
 
     /**
@@ -71,6 +83,16 @@ public class TransactionController {
     public BatchInsertResponse batch(@RequestHeader(USER_ID_HEADER) String userId,
                                      @Valid @RequestBody BatchTransactionsRequest request) {
         return transactionService.insertBatch(userId, request);
+    }
+
+    /**
+     * {@code GET /v1/transactions/counts} — total / uncategorised /
+     * per-category active transaction counts. Declared BEFORE {@code /{id}}
+     * so Spring routes the literal path first.
+     */
+    @GetMapping("/counts")
+    public CountsResponse counts(@RequestHeader(USER_ID_HEADER) String userId) {
+        return transactionService.listCounts(userId);
     }
 
     /**
@@ -103,6 +125,19 @@ public class TransactionController {
     public TransactionResponse get(@RequestHeader(USER_ID_HEADER) String userId,
                                    @PathVariable("id") UUID id) {
         return transactionService.getTransaction(userId, id);
+    }
+
+    /**
+     * {@code PATCH /v1/transactions/{id}} — partial update of editable fields
+     * (description, reference, transactionDate). 422 if any immutable field
+     * (accountId/entryType/amount/currency/source/categoryId/categoryName)
+     * appears in the body.
+     */
+    @PatchMapping("/{id}")
+    public TransactionResponse update(@RequestHeader(USER_ID_HEADER) String userId,
+                                      @PathVariable("id") UUID id,
+                                      @Valid @RequestBody UpdateTransactionRequest request) {
+        return transactionService.updateTransaction(userId, id, request);
     }
 
     /** Spec §3.2 — {@code PATCH /v1/transactions/{id}/category}. */

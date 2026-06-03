@@ -2,16 +2,19 @@ package com.personal.finance.transaction.service;
 
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.client.account.AccountSummary;
+import com.personal.finance.common.exception.ValidationException;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.entity.Category;
@@ -22,12 +25,14 @@ import com.personal.finance.transaction.enums.Source;
 import com.personal.finance.transaction.exception.AccountClosedException;
 import com.personal.finance.transaction.exception.AccountNotFoundException;
 import com.personal.finance.transaction.exception.CategoryNotFoundException;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,6 +41,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -153,15 +159,86 @@ class TransactionServiceImplTest {
     void listTransactions_returnsPagedDtos() {
         Transaction tx = txEntity();
         Page<Transaction> page = new PageImpl<>(List.of(tx), Pageable.unpaged(), 1);
-        when(transactionRepository.findActiveWithFilters(eq(USER_ID), any(), any(), any(), any(), any()))
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(page);
 
-        TransactionPageResponse resp = service.listTransactions(USER_ID, null, null, null, null, 1, 50);
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, null, false, null, null, null, 1, 50);
 
         assertThat(resp.getData()).hasSize(1);
         assertThat(resp.getTotal()).isEqualTo(1L);
         assertThat(resp.getPage()).isEqualTo(1);
         assertThat(resp.getSize()).isEqualTo(50);
+    }
+
+    @Test
+    void listTransactions_givenCategoryIdAndUncategorized_thenThrowsValidationException() {
+        assertThatThrownBy(() -> service.listTransactions(
+                USER_ID, null, UUID.randomUUID(), null, true, null, null, null, 1, 50))
+                .isInstanceOf(ValidationException.class);
+        verify(transactionRepository, never()).findAll(any(Specification.class), any(Pageable.class));
+    }
+
+    @Test
+    void listTransactions_givenCategoryIdsAndCategoryId_thenThrowsValidationException() {
+        assertThatThrownBy(() -> service.listTransactions(
+                USER_ID, null, UUID.randomUUID(), List.of(UUID.randomUUID()), false, null, null, null, 1, 50))
+                .isInstanceOf(ValidationException.class);
+    }
+
+    @Test
+    void listTransactions_givenEmptyCategoryIdsAlongsideUncategorized_thenAllowed() {
+        Page<Transaction> page = new PageImpl<>(List.of(), Pageable.unpaged(), 0);
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(page);
+
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, List.of(), true, null, null, null, 1, 50);
+
+        assertThat(resp.getTotal()).isZero();
+    }
+
+    @Test
+    void listTransactions_givenSearchQuery_passesItThroughToSpec() {
+        Page<Transaction> page = new PageImpl<>(List.of(txEntity()), Pageable.unpaged(), 1);
+        when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(page);
+
+        TransactionPageResponse resp = service.listTransactions(
+                USER_ID, null, null, null, false, null, null, "ParknShop", 1, 50);
+
+        assertThat(resp.getData()).hasSize(1);
+        verify(transactionRepository).findAll(any(Specification.class), any(Pageable.class));
+    }
+
+    // ── listCounts ───────────────────────────────────────────────────────
+
+    @Test
+    void listCounts_foldsNullGroupIntoUncategorizedAndSumsTotal() {
+        UUID catA = UUID.randomUUID();
+        UUID catB = UUID.randomUUID();
+        when(transactionRepository.countActiveGroupedByCategory(USER_ID))
+                .thenReturn(List.of(
+                        categoryCount(null, 47L),
+                        categoryCount(catA, 312L),
+                        categoryCount(catB, 100L)));
+
+        CountsResponse resp = service.listCounts(USER_ID);
+
+        assertThat(resp.getTotal()).isEqualTo(459L);
+        assertThat(resp.getUncategorized()).isEqualTo(47L);
+        assertThat(resp.getByCategory()).containsEntry(catA, 312L).containsEntry(catB, 100L);
+    }
+
+    @Test
+    void listCounts_givenNoRows_returnsZeroAndEmptyMap() {
+        when(transactionRepository.countActiveGroupedByCategory(USER_ID)).thenReturn(List.of());
+
+        CountsResponse resp = service.listCounts(USER_ID);
+
+        assertThat(resp.getTotal()).isZero();
+        assertThat(resp.getUncategorized()).isZero();
+        assertThat(resp.getByCategory()).isEmpty();
     }
 
     // ── getTransaction ───────────────────────────────────────────────────
@@ -275,6 +352,115 @@ class TransactionServiceImplTest {
 
         assertThatThrownBy(() -> service.categorise(USER_ID, id, req))
                 .isInstanceOf(CategoryNotFoundException.class);
+    }
+
+    // ── updateTransaction (PATCH /{id}) ──────────────────────────────────
+
+    @Test
+    void updateTransaction_givenOnlyDescription_appliesAndKeepsOtherFields() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("old desc");
+        tx.setReference("ref-1");
+        tx.setTransactionDate(LocalDate.of(2026, 5, 1));
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("Starbucks Causeway");
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("Starbucks Causeway");
+        assertThat(resp.getReference()).isEqualTo("ref-1");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 1));
+    }
+
+    @Test
+    void updateTransaction_givenAllEditableFields_appliesAll() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("new desc");
+        req.setReference("INV-001");
+        req.setTransactionDate(LocalDate.of(2026, 5, 24));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, req);
+
+        assertThat(resp.getDescription()).isEqualTo("new desc");
+        assertThat(resp.getReference()).isEqualTo("INV-001");
+        assertThat(resp.getTransactionDate()).isEqualTo(LocalDate.of(2026, 5, 24));
+    }
+
+    @Test
+    void updateTransaction_givenEmptyBody_returnsCurrentRow() {
+        UUID id = UUID.randomUUID();
+        Transaction tx = txEntity();
+        tx.setTransactionId(id);
+        tx.setDescription("unchanged");
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.of(tx));
+        when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        TransactionResponse resp = service.updateTransaction(USER_ID, id, new UpdateTransactionRequest());
+
+        assertThat(resp.getDescription()).isEqualTo("unchanged");
+    }
+
+    @Test
+    void updateTransaction_whenAccountIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAccountId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+        verify(transactionRepository, never()).findActiveByIdAndUserId(any(), anyString());
+        verify(transactionRepository, never()).save(any());
+    }
+
+    @Test
+    void updateTransaction_whenAmountSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setAmount(new BigDecimal("99.00"));
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenCategoryIdSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setCategoryId(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_whenEntryTypeAndCurrencyBothSet_throws422() {
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setEntryType(EntryType.CREDIT);
+        req.setCurrency("USD");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, UUID.randomUUID(), req))
+                .isInstanceOf(ImmutableFieldUpdateException.class);
+    }
+
+    @Test
+    void updateTransaction_givenNonExistentId_throws404() {
+        UUID id = UUID.randomUUID();
+        when(transactionRepository.findActiveByIdAndUserId(id, USER_ID)).thenReturn(Optional.empty());
+
+        UpdateTransactionRequest req = new UpdateTransactionRequest();
+        req.setDescription("anything");
+
+        assertThatThrownBy(() -> service.updateTransaction(USER_ID, id, req))
+                .isInstanceOf(TransactionNotFoundException.class);
+        verify(transactionRepository, never()).save(any());
     }
 
     // ── deleteTransaction ────────────────────────────────────────────────
@@ -552,6 +738,136 @@ class TransactionServiceImplTest {
         assertThat(resp.getFailedRows().get(0).getRowIndex()).isEqualTo(1);
     }
 
+    @Test
+    void insertBatch_rowWithCategoryId_thenLoadsExistingAndPersistsWithThatId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        UUID catId = UUID.randomUUID();
+        req.getRows().get(0).setCategoryId(catId);
+
+        Category cat = Category.builder().categoryId(catId).name("Existing").userId(USER_ID).build();
+        when(categoryService.loadOwnedById(USER_ID, catId)).thenReturn(cat);
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(catId);
+        verify(categoryService, never()).resolveByName(anyString(), anyString());
+    }
+
+    @Test
+    void insertBatch_rowWithExistingCategoryName_thenReusesExistingId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        req.getRows().get(0).setCategoryName("Groceries");
+
+        UUID existingId = UUID.randomUUID();
+        Category existing = Category.builder().categoryId(existingId).name("Groceries").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(existing, false));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(existingId);
+    }
+
+    @Test
+    void insertBatch_rowWithNewCategoryName_thenResolveByNameCreatesAndPersistsNewId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        req.getRows().get(0).setCategoryName("Pet care");
+
+        UUID newId = UUID.randomUUID();
+        Category created = Category.builder().categoryId(newId).name("Pet care").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Pet care"))
+                .thenReturn(new CategoryService.ResolvedCategory(created, true));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isEqualTo(newId);
+    }
+
+    @Test
+    void insertBatch_mixedBatch_thenEachRowResolvedIndependently() {
+        BatchTransactionsRequest req = batchRequest(3);
+        UUID existingByIdCat = UUID.randomUUID();
+        UUID existingByNameCat = UUID.randomUUID();
+        UUID newlyCreatedCat = UUID.randomUUID();
+        req.getRows().get(0).setCategoryId(existingByIdCat);
+        req.getRows().get(1).setCategoryName("Groceries");
+        req.getRows().get(2).setCategoryName("Pet care");
+
+        when(categoryService.loadOwnedById(USER_ID, existingByIdCat))
+                .thenReturn(Category.builder().categoryId(existingByIdCat).name("Salary").userId(USER_ID).build());
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(
+                        Category.builder().categoryId(existingByNameCat).name("Groceries").userId(USER_ID).build(), false));
+        when(categoryService.resolveByName(USER_ID, "Pet care"))
+                .thenReturn(new CategoryService.ResolvedCategory(
+                        Category.builder().categoryId(newlyCreatedCat).name("Pet care").userId(USER_ID).build(), true));
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(3);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository, org.mockito.Mockito.times(3)).save(captor.capture());
+        assertThat(captor.getAllValues()).extracting(Transaction::getCategoryId)
+                .containsExactly(existingByIdCat, existingByNameCat, newlyCreatedCat);
+    }
+
+    @Test
+    void insertBatch_rowWithBothCategoryFields_thenThatRowFails_otherRowsCommit() {
+        BatchTransactionsRequest req = batchRequest(3);
+        UUID goodCat = UUID.randomUUID();
+        req.getRows().get(0).setCategoryName("Groceries");
+        req.getRows().get(1).setCategoryId(UUID.randomUUID());
+        req.getRows().get(1).setCategoryName("BadBoth");
+        req.getRows().get(2).setCategoryId(goodCat);
+
+        Category groceries = Category.builder().categoryId(UUID.randomUUID()).name("Groceries").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Groceries"))
+                .thenReturn(new CategoryService.ResolvedCategory(groceries, false));
+        when(categoryService.loadOwnedById(USER_ID, goodCat))
+                .thenReturn(Category.builder().categoryId(goodCat).name("Salary").userId(USER_ID).build());
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(2);
+        assertThat(resp.getFailedRows()).hasSize(1);
+        assertThat(resp.getFailedRows().get(0).getRowIndex()).isEqualTo(1);
+    }
+
+    @Test
+    void insertBatch_rowWithNeitherCategoryField_thenInsertsWithNullCategoryId() {
+        BatchTransactionsRequest req = batchRequest(1);
+        // batchRequest does not set categoryId or categoryName — no-category case.
+        when(transactionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        BatchInsertResponse resp = service.insertBatch(USER_ID, req);
+
+        assertThat(resp.getInsertedCount()).isEqualTo(1);
+        assertThat(resp.getFailedRows()).isEmpty();
+        org.mockito.ArgumentCaptor<Transaction> captor = org.mockito.ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).save(captor.capture());
+        assertThat(captor.getValue().getCategoryId()).isNull();
+        verify(categoryService, never()).loadOwnedById(anyString(), any());
+        verify(categoryService, never()).resolveByName(anyString(), anyString());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     private CreateTransactionRequest txRequest() {
@@ -588,6 +904,13 @@ class TransactionServiceImplTest {
         return new ActiveTransactionLookup() {
             @Override public UUID getTransactionId() { return transactionId; }
             @Override public UUID getCategoryId() { return categoryId; }
+        };
+    }
+
+    private CategoryCountProjection categoryCount(UUID categoryId, long count) {
+        return new CategoryCountProjection() {
+            @Override public UUID getCategoryId() { return categoryId; }
+            @Override public long getCount() { return count; }
         };
     }
 

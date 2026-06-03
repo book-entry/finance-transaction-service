@@ -1,34 +1,41 @@
 package com.personal.finance.transaction.service;
 
+import com.personal.finance.common.exception.ValidationException;
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
 import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.request.UpdateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
 import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
+import com.personal.finance.transaction.dto.response.CountsResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.entity.Category;
 import com.personal.finance.transaction.entity.Transaction;
 import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.enums.Source;
+import com.personal.finance.transaction.exception.ImmutableFieldUpdateException;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapper;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+import com.personal.finance.transaction.repository.specification.TransactionSpecifications;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,7 +43,9 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -89,25 +98,40 @@ public class TransactionServiceImpl implements TransactionService {
      * Spec §3.2 GET — paged list with optional filters. Categories are fetched
      * via a lookup map keyed on categoryId so we make one query per page
      * instead of N+1.
+     *
+     * <p>Filter mutual-exclusion: at most one of {@code categoryId},
+     * {@code categoryIds}, or {@code uncategorized=true} may be set —
+     * combining them is a 400 (the user's intent is ambiguous).
      */
     @Override
     @Transactional(readOnly = true)
-    public TransactionPageResponse listTransactions(String userId, UUID accountId, UUID categoryId,
-                                                    LocalDate from, LocalDate to, int page, int size) {
+    public TransactionPageResponse listTransactions(String userId,
+                                                    UUID accountId,
+                                                    UUID categoryId,
+                                                    Collection<UUID> categoryIds,
+                                                    boolean uncategorized,
+                                                    LocalDate from,
+                                                    LocalDate to,
+                                                    String q,
+                                                    int page,
+                                                    int size) {
+        validateCategoryFilterExclusivity(categoryId, categoryIds, uncategorized);
+
         int effectivePage = Math.max(page - 1, 0); // spec is 1-indexed
         int effectiveSize = size <= 0 ? 50 : size;
         PageRequest pageable = PageRequest.of(effectivePage, effectiveSize,
                 Sort.by(Sort.Direction.DESC, "transactionDate", "createdAt"));
 
-        Page<Transaction> result = transactionRepository.findActiveWithFilters(
-                userId, accountId, categoryId, from, to, pageable);
+        Specification<Transaction> spec = TransactionSpecifications.activeForUserWithFilters(
+                userId, accountId, categoryId, categoryIds, uncategorized, from, to, q);
+        Page<Transaction> result = transactionRepository.findAll(spec, pageable);
 
         // Cheap category lookup: one map of categoryId → Category for any
         // categoryIds in the page. Soft-deleted categories return null → null ref.
-        List<UUID> categoryIds = result.getContent().stream()
+        List<UUID> pageCategoryIds = result.getContent().stream()
                 .map(Transaction::getCategoryId).filter(java.util.Objects::nonNull).distinct().toList();
         java.util.Map<UUID, Category> categoryMap = new java.util.HashMap<>();
-        for (UUID cid : categoryIds) {
+        for (UUID cid : pageCategoryIds) {
             try {
                 categoryMap.put(cid, categoryService.loadOwnedById(userId, cid));
             } catch (Exception ignored) {
@@ -188,6 +212,35 @@ public class TransactionServiceImpl implements TransactionService {
                 .transaction(transactionMapper.toResponse(saved, ref))
                 .category(ref)
                 .build();
+    }
+
+    /**
+     * {@code PATCH /v1/transactions/{id}} — partial update. Editable fields
+     * are applied only if non-null; immutable fields appearing in the body
+     * trigger a 422 before any mutation. Category changes still go through
+     * {@code PATCH /{id}/category} (whose inline-create flow doesn't
+     * generalise to a plain update).
+     */
+    @Override
+    @Transactional
+    public TransactionResponse updateTransaction(String userId, UUID transactionId,
+                                                 UpdateTransactionRequest request) {
+        rejectImmutableFields(request);
+
+        Transaction tx = loadOwned(userId, transactionId);
+        if (request.getDescription() != null) {
+            tx.setDescription(request.getDescription());
+        }
+        if (request.getReference() != null) {
+            tx.setReference(request.getReference());
+        }
+        if (request.getTransactionDate() != null) {
+            tx.setTransactionDate(request.getTransactionDate());
+        }
+        Transaction saved = transactionRepository.save(tx);
+
+        log.info("Transaction updated uid=[{}] id=[{}]", userId, transactionId);
+        return transactionMapper.toResponse(saved, currentCategoryRef(userId, saved));
     }
 
     @Override
@@ -359,10 +412,11 @@ public class TransactionServiceImpl implements TransactionService {
      */
     @Transactional
     protected void persistBatchRow(String userId, UUID bulkJobId, BatchTransactionsRequest.Row row) {
+        UUID categoryId = resolveBatchRowCategory(userId, row);
         Transaction entity = Transaction.builder()
                 .userId(userId)
                 .accountId(row.getAccountId())
-                .categoryId(row.getCategoryId())
+                .categoryId(categoryId)
                 .entryType(row.getEntryType())
                 .amount(row.getAmount())
                 .currency(row.getCurrency())
@@ -375,7 +429,104 @@ public class TransactionServiceImpl implements TransactionService {
         transactionRepository.save(entity);
     }
 
+    private UUID resolveBatchRowCategory(String userId, BatchTransactionsRequest.Row row) {
+        boolean hasId = row.getCategoryId() != null;
+        boolean hasName = row.getCategoryName() != null && !row.getCategoryName().isBlank();
+        if (hasId && hasName) {
+            throw new InvalidCategoryRequestException();
+        }
+        if (hasId) {
+            return categoryService.loadOwnedById(userId, row.getCategoryId()).getCategoryId();
+        }
+        if (hasName) {
+            return categoryService.resolveByName(userId, row.getCategoryName().trim()).category().getCategoryId();
+        }
+        return null;
+    }
+
+    /**
+     * {@code GET /v1/transactions/counts} — single GROUP BY in the repository,
+     * folded in memory. The {@code null}-key row is the uncategorised bucket;
+     * the rest land in {@code byCategory} and add up (plus uncategorised) to
+     * {@code total}. Empty {@code byCategory} when the user has no
+     * categorised rows yet.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public CountsResponse listCounts(String userId) {
+        List<CategoryCountProjection> rows = transactionRepository.countActiveGroupedByCategory(userId);
+
+        long uncategorized = 0L;
+        long total = 0L;
+        Map<UUID, Long> byCategory = new LinkedHashMap<>();
+        for (CategoryCountProjection row : rows) {
+            long count = row.getCount();
+            total += count;
+            if (row.getCategoryId() == null) {
+                uncategorized = count;
+            } else {
+                byCategory.put(row.getCategoryId(), count);
+            }
+        }
+
+        return CountsResponse.builder()
+                .total(total)
+                .uncategorized(uncategorized)
+                .byCategory(byCategory)
+                .build();
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Reject combinations of the three category filters — they have
+     * incompatible semantics and silently choosing one would hide bugs in the
+     * caller. Empty {@code categoryIds} counts as "not set".
+     */
+    private void validateCategoryFilterExclusivity(UUID categoryId,
+                                                   Collection<UUID> categoryIds,
+                                                   boolean uncategorized) {
+        int set = 0;
+        if (categoryId != null) set++;
+        if (categoryIds != null && !categoryIds.isEmpty()) set++;
+        if (uncategorized) set++;
+        if (set > 1) {
+            throw new ValidationException("categoryFilter",
+                    "at most one of categoryId, categoryIds, uncategorized=true may be provided");
+        }
+    }
+
+    /**
+     * Reject any non-null immutable field — accountId/entryType/amount/
+     * currency/source per double-entry hygiene, plus categoryId/categoryName
+     * because category changes have their own endpoint with inline-create
+     * semantics that don't generalise.
+     */
+    private void rejectImmutableFields(UpdateTransactionRequest request) {
+        List<String> attempted = new ArrayList<>();
+        if (request.getAccountId() != null) attempted.add("accountId");
+        if (request.getEntryType() != null) attempted.add("entryType");
+        if (request.getAmount() != null) attempted.add("amount");
+        if (request.getCurrency() != null) attempted.add("currency");
+        if (request.getSource() != null) attempted.add("source");
+        if (request.getCategoryId() != null) attempted.add("categoryId");
+        if (request.getCategoryName() != null) attempted.add("categoryName");
+        if (!attempted.isEmpty()) {
+            throw new ImmutableFieldUpdateException(attempted);
+        }
+    }
+
+    /** Re-resolves the category ref for a saved transaction; soft-deleted → null. */
+    private CategoryRefResponse currentCategoryRef(String userId, Transaction tx) {
+        if (tx.getCategoryId() == null) return null;
+        try {
+            Category cat = categoryService.loadOwnedById(userId, tx.getCategoryId());
+            return CategoryRefResponse.builder()
+                    .id(cat.getCategoryId()).name(cat.getName()).isNew(false).build();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
 
     private Transaction loadOwned(String userId, UUID id) {
         return transactionRepository.findActiveByIdAndUserId(id, userId)

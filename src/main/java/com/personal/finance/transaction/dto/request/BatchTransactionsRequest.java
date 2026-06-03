@@ -46,7 +46,10 @@ public class BatchTransactionsRequest {
         @Size(max = 100)
         private String reference;
         private String description;
-        /** Optional — pre-resolved category id (no inline create in batch). */
+        /** Optional — pre-resolved category id. Mutually exclusive with {@link #categoryName}. */
         private UUID categoryId;
+        /** Optional — inline create if absent. Mutually exclusive with {@link #categoryId}. */
+        @Size(max = 100)
+        private String categoryName;
     }
 }

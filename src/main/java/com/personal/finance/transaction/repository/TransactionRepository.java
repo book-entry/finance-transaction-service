@@ -4,8 +4,7 @@ import com.personal.finance.transaction.entity.Transaction;
 import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
@@ -94,27 +93,15 @@ public interface TransactionRepository
     String pickCurrencyForCategory(@Param("categoryId") UUID categoryId, @Param("userId") String userId);
 
     /**
-     * Bound version of the standard JPA pagination contract — kept here so
-     * service code can use a JpaSpecificationExecutor query for filtered list
-     * but page through a single Page<Transaction> result.
+     * Per-category active transaction count for {@code GET
+     * /v1/transactions/counts}. Single GROUP BY — the {@code null} group
+     * surfaces as the uncategorised bucket; the service sums the rest into
+     * {@code total} and folds the {@code null} row into {@code uncategorized}.
      */
-    @Query(value = "SELECT t FROM Transaction t WHERE t.userId = :userId AND t.deletedAt IS NULL"
-            + " AND (:accountId IS NULL OR t.accountId = :accountId)"
-            + " AND (:categoryId IS NULL OR t.categoryId = :categoryId)"
-            + " AND (CAST(:fromDate AS date) IS NULL OR t.transactionDate >= :fromDate)"
-            + " AND (CAST(:toDate AS date) IS NULL OR t.transactionDate <= :toDate)",
-            countQuery = "SELECT COUNT(t) FROM Transaction t WHERE t.userId = :userId AND t.deletedAt IS NULL"
-            + " AND (:accountId IS NULL OR t.accountId = :accountId)"
-            + " AND (:categoryId IS NULL OR t.categoryId = :categoryId)"
-            + " AND (CAST(:fromDate AS date) IS NULL OR t.transactionDate >= :fromDate)"
-            + " AND (CAST(:toDate AS date) IS NULL OR t.transactionDate <= :toDate)")
-    Page<Transaction> findActiveWithFilters(
-            @Param("userId") String userId,
-            @Param("accountId") UUID accountId,
-            @Param("categoryId") UUID categoryId,
-            @Param("fromDate") LocalDate fromDate,
-            @Param("toDate") LocalDate toDate,
-            Pageable pageable);
+    @Query("SELECT t.categoryId AS categoryId, COUNT(t) AS count "
+            + "FROM Transaction t WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "GROUP BY t.categoryId")
+    List<CategoryCountProjection> countActiveGroupedByCategory(@Param("userId") String userId);
 
     /**
      * Per-account aggregates for {@code GET /v1/transactions/balances}.
