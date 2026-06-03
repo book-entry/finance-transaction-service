@@ -3,6 +3,7 @@ package com.personal.finance.transaction.controller;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /** REST entry points for transactions — spec §3.2. Routing only. */
@@ -65,6 +67,17 @@ public class TransactionController {
     public BatchInsertResponse batch(@RequestHeader(USER_ID_HEADER) String userId,
                                      @Valid @RequestBody BatchTransactionsRequest request) {
         return transactionService.insertBatch(userId, request);
+    }
+
+    /**
+     * {@code GET /v1/transactions/balances} — per-account aggregates.
+     * Declared BEFORE {@code /{id}} so Spring routes the literal path first.
+     */
+    @GetMapping("/balances")
+    public BalancesResponse balances(@RequestHeader(USER_ID_HEADER) String userId,
+                                     @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf,
+                                     @RequestParam(required = false) List<UUID> accountIds) {
+        return transactionService.listBalances(userId, asOf, accountIds);
     }
 
     /** Spec §3.2 — {@code GET /v1/transactions/{id}}. */

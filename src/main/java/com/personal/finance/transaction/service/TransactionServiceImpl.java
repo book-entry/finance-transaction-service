@@ -4,6 +4,7 @@ import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
@@ -11,11 +12,13 @@ import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 import com.personal.finance.transaction.entity.Category;
 import com.personal.finance.transaction.entity.Transaction;
+import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.enums.Source;
 import com.personal.finance.transaction.exception.InvalidCategoryRequestException;
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapper;
 import com.personal.finance.transaction.repository.TransactionRepository;
+import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -27,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -193,6 +197,40 @@ public class TransactionServiceImpl implements TransactionService {
     }
 
     /**
+     * {@code GET /v1/transactions/balances} — single GROUP BY aggregate.
+     * {@code asOf} defaults to today when null. An empty (but non-null)
+     * {@code accountIds} collection short-circuits to an empty result rather
+     * than firing an {@code IN ()} that some JPA providers reject.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public BalancesResponse listBalances(String userId, LocalDate asOf, Collection<UUID> accountIds) {
+        LocalDate effectiveAsOf = asOf == null ? LocalDate.now() : asOf;
+
+        if (accountIds != null && accountIds.isEmpty()) {
+            return BalancesResponse.builder()
+                    .asOf(effectiveAsOf)
+                    .balances(List.of())
+                    .build();
+        }
+
+        List<AccountBalanceAggregate> rows = (accountIds == null)
+                ? transactionRepository.aggregateBalances(
+                        userId, effectiveAsOf, EntryType.CREDIT, EntryType.DEBIT)
+                : transactionRepository.aggregateBalancesForAccounts(
+                        userId, effectiveAsOf, accountIds, EntryType.CREDIT, EntryType.DEBIT);
+
+        List<BalancesResponse.AccountBalance> balances = rows.stream()
+                .map(this::toAccountBalance)
+                .toList();
+
+        return BalancesResponse.builder()
+                .asOf(effectiveAsOf)
+                .balances(balances)
+                .build();
+    }
+
+    /**
      * Spec §3.2 POST /batch — per-row isolation: validation failures collected
      * into failedRows, valid rows committed.
      */
@@ -267,6 +305,18 @@ public class TransactionServiceImpl implements TransactionService {
                 .id(resolved.category.getCategoryId())
                 .name(resolved.category.getName())
                 .isNew(resolved.isNew)
+                .build();
+    }
+
+    private BalancesResponse.AccountBalance toAccountBalance(AccountBalanceAggregate row) {
+        return BalancesResponse.AccountBalance.builder()
+                .accountId(row.getAccountId())
+                .currency(row.getCurrency())
+                .totalCredit(row.getTotalCredit())
+                .totalDebit(row.getTotalDebit())
+                .balance(row.getTotalCredit().subtract(row.getTotalDebit()))
+                .txnCount(row.getTxnCount())
+                .lastTxnDate(row.getLastTxnDate())
                 .build();
     }
 

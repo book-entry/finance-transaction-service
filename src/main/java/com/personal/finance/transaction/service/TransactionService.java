@@ -3,12 +3,14 @@ package com.personal.finance.transaction.service;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.UUID;
 
 /** Implements the transaction flows defined in spec §3.2. */
@@ -32,4 +34,11 @@ public interface TransactionService {
 
     /** Spec §3.2 POST /v1/transactions/batch — internal bulk insert. */
     BatchInsertResponse insertBatch(String userId, BatchTransactionsRequest request);
+
+    /**
+     * {@code GET /v1/transactions/balances} — per-account credit/debit totals.
+     * {@code asOf} defaults to today when null; {@code accountIds} is optional
+     * (null/empty means "all owned accounts").
+     */
+    BalancesResponse listBalances(String userId, LocalDate asOf, Collection<UUID> accountIds);
 }

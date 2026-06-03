@@ -1,6 +1,8 @@
 package com.personal.finance.transaction.repository;
 
 import com.personal.finance.transaction.entity.Transaction;
+import com.personal.finance.transaction.enums.EntryType;
+import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -13,6 +15,8 @@ import org.springframework.stereotype.Repository;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -80,4 +84,37 @@ public interface TransactionRepository
             @Param("fromDate") LocalDate fromDate,
             @Param("toDate") LocalDate toDate,
             Pageable pageable);
+
+    /**
+     * Per-account aggregates for {@code GET /v1/transactions/balances}.
+     * Grouped by {@code (accountId, currency)} so mixed-currency data on one
+     * account surfaces rather than being silently summed across currencies.
+     * Two methods (with / without the {@code accountIds} filter) keep the JPQL
+     * straightforward — passing an empty {@code IN} list to Hibernate can throw.
+     */
+    String BALANCE_AGG_SELECT =
+            "SELECT t.accountId AS accountId, t.currency AS currency, "
+            + "COALESCE(SUM(CASE WHEN t.entryType = :creditType THEN t.amount ELSE 0 END), 0) AS totalCredit, "
+            + "COALESCE(SUM(CASE WHEN t.entryType = :debitType  THEN t.amount ELSE 0 END), 0) AS totalDebit, "
+            + "COUNT(t) AS txnCount, "
+            + "MAX(t.transactionDate) AS lastTxnDate "
+            + "FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL AND t.transactionDate <= :asOf";
+
+    String BALANCE_AGG_GROUP_BY = " GROUP BY t.accountId, t.currency";
+
+    @Query(BALANCE_AGG_SELECT + BALANCE_AGG_GROUP_BY)
+    List<AccountBalanceAggregate> aggregateBalances(
+            @Param("userId") String userId,
+            @Param("asOf") LocalDate asOf,
+            @Param("creditType") EntryType creditType,
+            @Param("debitType") EntryType debitType);
+
+    @Query(BALANCE_AGG_SELECT + " AND t.accountId IN :accountIds" + BALANCE_AGG_GROUP_BY)
+    List<AccountBalanceAggregate> aggregateBalancesForAccounts(
+            @Param("userId") String userId,
+            @Param("asOf") LocalDate asOf,
+            @Param("accountIds") Collection<UUID> accountIds,
+            @Param("creditType") EntryType creditType,
+            @Param("debitType") EntryType debitType);
 }

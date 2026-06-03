@@ -5,6 +5,7 @@ import com.personal.finance.transaction.client.account.AccountSummary;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
+import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
@@ -21,6 +22,7 @@ import com.personal.finance.transaction.exception.InvalidCategoryRequestExceptio
 import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
+import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -291,6 +293,82 @@ class TransactionServiceImplTest {
                 .isInstanceOf(TransactionNotFoundException.class);
     }
 
+    // ── listBalances ─────────────────────────────────────────────────────
+
+    @Test
+    void listBalances_givenNullAsOf_defaultsToTodayAndUsesUnfilteredQuery() {
+        UUID accountId = UUID.randomUUID();
+        when(transactionRepository.aggregateBalances(
+                eq(USER_ID), any(LocalDate.class), eq(EntryType.CREDIT), eq(EntryType.DEBIT)))
+                .thenReturn(List.of(aggregate(accountId, "HKD",
+                        new BigDecimal("56800.00"), new BigDecimal("18420.50"),
+                        42L, LocalDate.of(2026, 5, 31))));
+
+        BalancesResponse resp = service.listBalances(USER_ID, null, null);
+
+        assertThat(resp.getAsOf()).isEqualTo(LocalDate.now());
+        assertThat(resp.getBalances()).hasSize(1);
+        BalancesResponse.AccountBalance b = resp.getBalances().get(0);
+        assertThat(b.getAccountId()).isEqualTo(accountId);
+        assertThat(b.getCurrency()).isEqualTo("HKD");
+        assertThat(b.getTotalCredit()).isEqualByComparingTo("56800.00");
+        assertThat(b.getTotalDebit()).isEqualByComparingTo("18420.50");
+        assertThat(b.getBalance()).isEqualByComparingTo("38379.50");
+        assertThat(b.getTxnCount()).isEqualTo(42L);
+        assertThat(b.getLastTxnDate()).isEqualTo(LocalDate.of(2026, 5, 31));
+        verify(transactionRepository, never()).aggregateBalancesForAccounts(
+                anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listBalances_givenAccountIds_callsFilteredQueryAndPropagatesAsOf() {
+        LocalDate asOf = LocalDate.of(2026, 6, 1);
+        UUID a1 = UUID.randomUUID();
+        UUID a2 = UUID.randomUUID();
+        List<UUID> ids = List.of(a1, a2);
+        when(transactionRepository.aggregateBalancesForAccounts(
+                eq(USER_ID), eq(asOf), eq(ids), eq(EntryType.CREDIT), eq(EntryType.DEBIT)))
+                .thenReturn(List.of(
+                        aggregate(a1, "HKD", new BigDecimal("100"), new BigDecimal("40"),
+                                3L, LocalDate.of(2026, 5, 20)),
+                        aggregate(a2, "USD", new BigDecimal("50"), new BigDecimal("0"),
+                                1L, LocalDate.of(2026, 4, 10))));
+
+        BalancesResponse resp = service.listBalances(USER_ID, asOf, ids);
+
+        assertThat(resp.getAsOf()).isEqualTo(asOf);
+        assertThat(resp.getBalances()).hasSize(2);
+        assertThat(resp.getBalances().get(0).getBalance()).isEqualByComparingTo("60");
+        assertThat(resp.getBalances().get(1).getBalance()).isEqualByComparingTo("50");
+        verify(transactionRepository, never()).aggregateBalances(
+                anyString(), any(), any(), any());
+    }
+
+    @Test
+    void listBalances_givenEmptyAccountIds_shortCircuitsWithEmptyResponse() {
+        LocalDate asOf = LocalDate.of(2026, 6, 1);
+
+        BalancesResponse resp = service.listBalances(USER_ID, asOf, List.of());
+
+        assertThat(resp.getAsOf()).isEqualTo(asOf);
+        assertThat(resp.getBalances()).isEmpty();
+        verify(transactionRepository, never()).aggregateBalances(
+                anyString(), any(), any(), any());
+        verify(transactionRepository, never()).aggregateBalancesForAccounts(
+                anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listBalances_whenNoActiveTransactions_returnsEmptyBalances() {
+        when(transactionRepository.aggregateBalances(
+                eq(USER_ID), any(LocalDate.class), eq(EntryType.CREDIT), eq(EntryType.DEBIT)))
+                .thenReturn(List.of());
+
+        BalancesResponse resp = service.listBalances(USER_ID, null, null);
+
+        assertThat(resp.getBalances()).isEmpty();
+    }
+
     // ── insertBatch ──────────────────────────────────────────────────────
 
     @Test
@@ -353,6 +431,19 @@ class TransactionServiceImplTest {
 
     private AccountSummary activeAccountSummary(UUID id) {
         return AccountSummary.builder().accountId(id).status(AccountStatus.ACTIVE).currency("USD").build();
+    }
+
+    private AccountBalanceAggregate aggregate(UUID accountId, String currency,
+                                              BigDecimal credit, BigDecimal debit,
+                                              long count, LocalDate lastTxnDate) {
+        return new AccountBalanceAggregate() {
+            @Override public UUID getAccountId() { return accountId; }
+            @Override public String getCurrency() { return currency; }
+            @Override public BigDecimal getTotalCredit() { return credit; }
+            @Override public BigDecimal getTotalDebit() { return debit; }
+            @Override public long getTxnCount() { return count; }
+            @Override public LocalDate getLastTxnDate() { return lastTxnDate; }
+        };
     }
 
     private BatchTransactionsRequest batchRequest(int n) {
