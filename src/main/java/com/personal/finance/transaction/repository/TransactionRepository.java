@@ -3,6 +3,7 @@ package com.personal.finance.transaction.repository;
 import com.personal.finance.transaction.entity.Transaction;
 import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
+import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -41,6 +42,36 @@ public interface TransactionRepository
     @Modifying
     @Query("UPDATE Transaction t SET t.categoryId = :categoryId WHERE t.transactionId = :id AND t.userId = :userId AND t.deletedAt IS NULL")
     int setCategory(@Param("id") UUID id, @Param("userId") String userId, @Param("categoryId") UUID categoryId);
+
+    /**
+     * Per-id lookup for the bulk endpoints — returns one row per active+owned
+     * transaction so the service can compute updated / skipped / notFound
+     * buckets in memory before issuing the write.
+     */
+    @Query("SELECT t.transactionId AS transactionId, t.categoryId AS categoryId "
+            + "FROM Transaction t WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "AND t.transactionId IN :ids")
+    List<ActiveTransactionLookup> findActiveLookupByIds(
+            @Param("userId") String userId,
+            @Param("ids") Collection<UUID> ids);
+
+    /** Bulk re-categorise — used by {@code PATCH /v1/transactions/bulk-category}. */
+    @Modifying
+    @Query("UPDATE Transaction t SET t.categoryId = :categoryId "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL AND t.transactionId IN :ids")
+    int bulkSetCategory(
+            @Param("ids") Collection<UUID> ids,
+            @Param("userId") String userId,
+            @Param("categoryId") UUID categoryId);
+
+    /** Bulk soft-delete — used by {@code DELETE /v1/transactions/bulk}. */
+    @Modifying
+    @Query("UPDATE Transaction t SET t.deletedAt = :now "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL AND t.transactionId IN :ids")
+    int bulkSoftDelete(
+            @Param("ids") Collection<UUID> ids,
+            @Param("userId") String userId,
+            @Param("now") OffsetDateTime now);
 
     /**
      * Atomic-delete WRITE 2 — clears category_id on every active transaction

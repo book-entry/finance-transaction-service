@@ -2,10 +2,14 @@ package com.personal.finance.transaction.service;
 
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
+import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
+import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
+import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
@@ -19,6 +23,7 @@ import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapper;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
+import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -227,6 +232,98 @@ public class TransactionServiceImpl implements TransactionService {
         return BalancesResponse.builder()
                 .asOf(effectiveAsOf)
                 .balances(balances)
+                .build();
+    }
+
+    /**
+     * {@code PATCH /v1/transactions/bulk-category} — resolve the target
+     * category once (inline-create if a name was given), then split the input
+     * ids into updated / skipped / notFound buckets before issuing a single
+     * bulk UPDATE. Honest reporting: a row already in the target category
+     * counts as {@code skipped}, not {@code updated}.
+     */
+    @Override
+    @Transactional
+    public BulkCategoryResponse bulkSetCategory(String userId, BulkCategoryRequest request) {
+        boolean hasId = request.getCategoryId() != null;
+        boolean hasName = request.getCategoryName() != null && !request.getCategoryName().isBlank();
+        if (hasId == hasName) {
+            throw new InvalidCategoryRequestException();
+        }
+
+        Category category;
+        boolean isNew;
+        if (hasId) {
+            category = categoryService.loadOwnedById(userId, request.getCategoryId());
+            isNew = false;
+        } else {
+            CategoryService.ResolvedCategory resolved =
+                    categoryService.resolveByName(userId, request.getCategoryName().trim());
+            category = resolved.category();
+            isNew = resolved.created();
+        }
+
+        List<UUID> requested = request.getTransactionIds();
+        List<ActiveTransactionLookup> found = transactionRepository.findActiveLookupByIds(userId, requested);
+
+        java.util.Set<UUID> foundIds = new java.util.HashSet<>(found.size());
+        List<UUID> toUpdate = new ArrayList<>();
+        int skipped = 0;
+        for (ActiveTransactionLookup row : found) {
+            foundIds.add(row.getTransactionId());
+            if (category.getCategoryId().equals(row.getCategoryId())) {
+                skipped++;
+            } else {
+                toUpdate.add(row.getTransactionId());
+            }
+        }
+
+        List<UUID> notFound = requested.stream().filter(id -> !foundIds.contains(id)).toList();
+
+        int updated = 0;
+        if (!toUpdate.isEmpty()) {
+            updated = transactionRepository.bulkSetCategory(toUpdate, userId, category.getCategoryId());
+        }
+
+        log.info("Bulk categorise uid=[{}] cat=[{}] requested=[{}] updated=[{}] skipped=[{}] notFound=[{}]",
+                userId, category.getCategoryId(), requested.size(), updated, skipped, notFound.size());
+
+        return BulkCategoryResponse.builder()
+                .updated(updated)
+                .skipped(skipped)
+                .notFound(notFound)
+                .category(CategoryRefResponse.builder()
+                        .id(category.getCategoryId()).name(category.getName()).isNew(isNew).build())
+                .build();
+    }
+
+    /**
+     * {@code DELETE /v1/transactions/bulk} — pre-SELECT to know which ids
+     * exist and are owned, then soft-delete them in a single UPDATE. {@code
+     * notFound} covers ids that don't exist, were already soft-deleted, or
+     * aren't owned by this user.
+     */
+    @Override
+    @Transactional
+    public BulkDeleteResponse bulkDelete(String userId, BulkDeleteRequest request) {
+        List<UUID> requested = request.getTransactionIds();
+        List<ActiveTransactionLookup> found = transactionRepository.findActiveLookupByIds(userId, requested);
+
+        List<UUID> foundIds = found.stream().map(ActiveTransactionLookup::getTransactionId).toList();
+        java.util.Set<UUID> foundSet = new java.util.HashSet<>(foundIds);
+        List<UUID> notFound = requested.stream().filter(id -> !foundSet.contains(id)).toList();
+
+        int deleted = 0;
+        if (!foundIds.isEmpty()) {
+            deleted = transactionRepository.bulkSoftDelete(foundIds, userId, OffsetDateTime.now());
+        }
+
+        log.info("Bulk delete uid=[{}] requested=[{}] deleted=[{}] notFound=[{}]",
+                userId, requested.size(), deleted, notFound.size());
+
+        return BulkDeleteResponse.builder()
+                .deleted(deleted)
+                .notFound(notFound)
                 .build();
     }
 
