@@ -1,10 +1,14 @@
 package com.personal.finance.transaction.controller;
 
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
+import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
+import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
+import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
@@ -78,6 +82,20 @@ public class TransactionController {
                                      @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf,
                                      @RequestParam(required = false) List<UUID> accountIds) {
         return transactionService.listBalances(userId, asOf, accountIds);
+    }
+
+    /** {@code PATCH /v1/transactions/bulk-category} — atomic bulk re-categorise. */
+    @PatchMapping("/bulk-category")
+    public BulkCategoryResponse bulkCategory(@RequestHeader(USER_ID_HEADER) String userId,
+                                             @Valid @RequestBody BulkCategoryRequest request) {
+        return transactionService.bulkSetCategory(userId, request);
+    }
+
+    /** {@code DELETE /v1/transactions/bulk} — atomic bulk soft-delete. */
+    @DeleteMapping("/bulk")
+    public BulkDeleteResponse bulkDelete(@RequestHeader(USER_ID_HEADER) String userId,
+                                         @Valid @RequestBody BulkDeleteRequest request) {
+        return transactionService.bulkDelete(userId, request);
     }
 
     /** Spec §3.2 — {@code GET /v1/transactions/{id}}. */

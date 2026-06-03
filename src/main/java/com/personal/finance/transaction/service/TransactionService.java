@@ -1,10 +1,14 @@
 package com.personal.finance.transaction.service;
 
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
+import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
+import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
+import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
@@ -41,4 +45,10 @@ public interface TransactionService {
      * (null/empty means "all owned accounts").
      */
     BalancesResponse listBalances(String userId, LocalDate asOf, Collection<UUID> accountIds);
+
+    /** {@code PATCH /v1/transactions/bulk-category} — atomic bulk re-categorise. */
+    BulkCategoryResponse bulkSetCategory(String userId, BulkCategoryRequest request);
+
+    /** {@code DELETE /v1/transactions/bulk} — atomic bulk soft-delete. */
+    BulkDeleteResponse bulkDelete(String userId, BulkDeleteRequest request);
 }

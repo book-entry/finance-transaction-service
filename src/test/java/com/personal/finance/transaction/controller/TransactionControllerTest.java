@@ -3,10 +3,14 @@ package com.personal.finance.transaction.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.personal.finance.common.web.ApiResponseBodyAdvice;
 import com.personal.finance.common.web.GlobalExceptionHandler;
+import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
+import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
+import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.CategoryRefResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
@@ -250,6 +254,98 @@ class TransactionControllerTest {
     @Test
     void balances_givenMissingUserId_thenReturns400() throws Exception {
         mvc.perform(get("/v1/transactions/balances"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void bulkCategory_givenValidPayload_returns200WithSplitCounts() throws Exception {
+        UUID catId = UUID.randomUUID();
+        UUID notFoundId = UUID.randomUUID();
+        when(transactionService.bulkSetCategory(eq(USER_ID), any()))
+                .thenReturn(BulkCategoryResponse.builder()
+                        .updated(47)
+                        .skipped(0)
+                        .notFound(List.of(notFoundId))
+                        .category(CategoryRefResponse.builder().id(catId).name("Coffee").isNew(false).build())
+                        .build());
+
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID(), UUID.randomUUID()));
+        req.setCategoryId(catId);
+
+        mvc.perform(patch("/v1/transactions/bulk-category")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.updated").value(47))
+                .andExpect(jsonPath("$.data.skipped").value(0))
+                .andExpect(jsonPath("$.data.notFound[0]").value(notFoundId.toString()))
+                .andExpect(jsonPath("$.data.category.id").value(catId.toString()))
+                .andExpect(jsonPath("$.data.category.isNew").value(false));
+    }
+
+    @Test
+    void bulkCategory_givenEmptyTransactionIds_returns400() throws Exception {
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of());
+        req.setCategoryId(UUID.randomUUID());
+
+        mvc.perform(patch("/v1/transactions/bulk-category")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void bulkCategory_givenBothCategoryFields_returns400() throws Exception {
+        when(transactionService.bulkSetCategory(eq(USER_ID), any()))
+                .thenThrow(new com.personal.finance.transaction.exception.InvalidCategoryRequestException());
+
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID()));
+        req.setCategoryId(UUID.randomUUID());
+        req.setCategoryName("X");
+
+        mvc.perform(patch("/v1/transactions/bulk-category")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_CATEGORY_REQUEST"));
+    }
+
+    @Test
+    void bulkDelete_givenValidPayload_returns200WithSplitCounts() throws Exception {
+        UUID notFoundId = UUID.randomUUID();
+        when(transactionService.bulkDelete(eq(USER_ID), any()))
+                .thenReturn(BulkDeleteResponse.builder()
+                        .deleted(3)
+                        .notFound(List.of(notFoundId))
+                        .build());
+
+        BulkDeleteRequest req = new BulkDeleteRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), notFoundId));
+
+        mvc.perform(delete("/v1/transactions/bulk")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(3))
+                .andExpect(jsonPath("$.data.notFound[0]").value(notFoundId.toString()));
+    }
+
+    @Test
+    void bulkDelete_givenEmptyTransactionIds_returns400() throws Exception {
+        BulkDeleteRequest req = new BulkDeleteRequest();
+        req.setTransactionIds(List.of());
+
+        mvc.perform(delete("/v1/transactions/bulk")
+                        .header(USER_ID_HEADER, USER_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(req)))
                 .andExpect(status().isBadRequest());
     }
 

@@ -3,10 +3,14 @@ package com.personal.finance.transaction.service;
 import com.personal.finance.transaction.client.account.AccountServiceClient;
 import com.personal.finance.transaction.client.account.AccountSummary;
 import com.personal.finance.transaction.dto.request.BatchTransactionsRequest;
+import com.personal.finance.transaction.dto.request.BulkCategoryRequest;
+import com.personal.finance.transaction.dto.request.BulkDeleteRequest;
 import com.personal.finance.transaction.dto.request.CategorisePatchRequest;
 import com.personal.finance.transaction.dto.request.CreateTransactionRequest;
 import com.personal.finance.transaction.dto.response.BalancesResponse;
 import com.personal.finance.transaction.dto.response.BatchInsertResponse;
+import com.personal.finance.transaction.dto.response.BulkCategoryResponse;
+import com.personal.finance.transaction.dto.response.BulkDeleteResponse;
 import com.personal.finance.transaction.dto.response.CategorisedTransactionResponse;
 import com.personal.finance.transaction.dto.response.TransactionPageResponse;
 import com.personal.finance.transaction.dto.response.TransactionResponse;
@@ -23,6 +27,7 @@ import com.personal.finance.transaction.exception.TransactionNotFoundException;
 import com.personal.finance.transaction.mapper.TransactionMapperImpl;
 import com.personal.finance.transaction.repository.TransactionRepository;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
+import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -369,6 +374,152 @@ class TransactionServiceImplTest {
         assertThat(resp.getBalances()).isEmpty();
     }
 
+    // ── bulkSetCategory ──────────────────────────────────────────────────
+
+    @Test
+    void bulkSetCategory_givenBothFields_thenThrows400() {
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID()));
+        req.setCategoryId(UUID.randomUUID());
+        req.setCategoryName("X");
+
+        assertThatThrownBy(() -> service.bulkSetCategory(USER_ID, req))
+                .isInstanceOf(InvalidCategoryRequestException.class);
+    }
+
+    @Test
+    void bulkSetCategory_givenNeitherField_thenThrows400() {
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID()));
+
+        assertThatThrownBy(() -> service.bulkSetCategory(USER_ID, req))
+                .isInstanceOf(InvalidCategoryRequestException.class);
+    }
+
+    @Test
+    void bulkSetCategory_splitsUpdatedSkippedNotFound_andSetsIsNewFalseForExistingId() {
+        UUID catId = UUID.randomUUID();
+        Category cat = Category.builder().categoryId(catId).name("Coffee").userId(USER_ID).build();
+        when(categoryService.loadOwnedById(USER_ID, catId)).thenReturn(cat);
+
+        UUID toUpdate = UUID.randomUUID();
+        UUID alreadyInCat = UUID.randomUUID();
+        UUID missing = UUID.randomUUID();
+        when(transactionRepository.findActiveLookupByIds(eq(USER_ID), any()))
+                .thenReturn(List.of(
+                        activeLookup(toUpdate, UUID.randomUUID()),
+                        activeLookup(alreadyInCat, catId)));
+        when(transactionRepository.bulkSetCategory(eq(List.of(toUpdate)), eq(USER_ID), eq(catId)))
+                .thenReturn(1);
+
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(toUpdate, alreadyInCat, missing));
+        req.setCategoryId(catId);
+
+        BulkCategoryResponse resp = service.bulkSetCategory(USER_ID, req);
+
+        assertThat(resp.getUpdated()).isEqualTo(1);
+        assertThat(resp.getSkipped()).isEqualTo(1);
+        assertThat(resp.getNotFound()).containsExactly(missing);
+        assertThat(resp.getCategory().getId()).isEqualTo(catId);
+        assertThat(resp.getCategory().isNew()).isFalse();
+    }
+
+    @Test
+    void bulkSetCategory_givenCategoryName_inlineCreatesAndMarksIsNewTrue() {
+        UUID newCatId = UUID.randomUUID();
+        Category cat = Category.builder().categoryId(newCatId).name("Coffee").userId(USER_ID).build();
+        when(categoryService.resolveByName(USER_ID, "Coffee"))
+                .thenReturn(new CategoryService.ResolvedCategory(cat, true));
+
+        UUID t1 = UUID.randomUUID();
+        when(transactionRepository.findActiveLookupByIds(eq(USER_ID), any()))
+                .thenReturn(List.of(activeLookup(t1, null)));
+        when(transactionRepository.bulkSetCategory(eq(List.of(t1)), eq(USER_ID), eq(newCatId)))
+                .thenReturn(1);
+
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(t1));
+        req.setCategoryName("Coffee");
+
+        BulkCategoryResponse resp = service.bulkSetCategory(USER_ID, req);
+
+        assertThat(resp.getUpdated()).isEqualTo(1);
+        assertThat(resp.getCategory().isNew()).isTrue();
+    }
+
+    @Test
+    void bulkSetCategory_whenAllIdsMissing_skipsUpdateAndReturnsNotFoundOnly() {
+        UUID catId = UUID.randomUUID();
+        Category cat = Category.builder().categoryId(catId).name("Coffee").userId(USER_ID).build();
+        when(categoryService.loadOwnedById(USER_ID, catId)).thenReturn(cat);
+        when(transactionRepository.findActiveLookupByIds(eq(USER_ID), any())).thenReturn(List.of());
+
+        UUID missing1 = UUID.randomUUID();
+        UUID missing2 = UUID.randomUUID();
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(missing1, missing2));
+        req.setCategoryId(catId);
+
+        BulkCategoryResponse resp = service.bulkSetCategory(USER_ID, req);
+
+        assertThat(resp.getUpdated()).isZero();
+        assertThat(resp.getSkipped()).isZero();
+        assertThat(resp.getNotFound()).containsExactlyInAnyOrder(missing1, missing2);
+        verify(transactionRepository, never()).bulkSetCategory(any(), anyString(), any());
+    }
+
+    @Test
+    void bulkSetCategory_whenCategoryIdNotFound_thenThrows404() {
+        UUID catId = UUID.randomUUID();
+        when(categoryService.loadOwnedById(USER_ID, catId))
+                .thenThrow(new CategoryNotFoundException("missing"));
+
+        BulkCategoryRequest req = new BulkCategoryRequest();
+        req.setTransactionIds(List.of(UUID.randomUUID()));
+        req.setCategoryId(catId);
+
+        assertThatThrownBy(() -> service.bulkSetCategory(USER_ID, req))
+                .isInstanceOf(CategoryNotFoundException.class);
+        verify(transactionRepository, never()).findActiveLookupByIds(anyString(), any());
+    }
+
+    // ── bulkDelete ───────────────────────────────────────────────────────
+
+    @Test
+    void bulkDelete_splitsDeletedAndNotFound() {
+        UUID present = UUID.randomUUID();
+        UUID missing = UUID.randomUUID();
+        when(transactionRepository.findActiveLookupByIds(eq(USER_ID), any()))
+                .thenReturn(List.of(activeLookup(present, null)));
+        when(transactionRepository.bulkSoftDelete(eq(List.of(present)), eq(USER_ID), any(OffsetDateTime.class)))
+                .thenReturn(1);
+
+        BulkDeleteRequest req = new BulkDeleteRequest();
+        req.setTransactionIds(List.of(present, missing));
+
+        BulkDeleteResponse resp = service.bulkDelete(USER_ID, req);
+
+        assertThat(resp.getDeleted()).isEqualTo(1);
+        assertThat(resp.getNotFound()).containsExactly(missing);
+    }
+
+    @Test
+    void bulkDelete_whenNoIdsActive_skipsUpdateAndReturnsAllAsNotFound() {
+        when(transactionRepository.findActiveLookupByIds(eq(USER_ID), any())).thenReturn(List.of());
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+
+        BulkDeleteRequest req = new BulkDeleteRequest();
+        req.setTransactionIds(List.of(a, b));
+
+        BulkDeleteResponse resp = service.bulkDelete(USER_ID, req);
+
+        assertThat(resp.getDeleted()).isZero();
+        assertThat(resp.getNotFound()).containsExactlyInAnyOrder(a, b);
+        verify(transactionRepository, never()).bulkSoftDelete(any(), anyString(), any());
+    }
+
     // ── insertBatch ──────────────────────────────────────────────────────
 
     @Test
@@ -431,6 +582,13 @@ class TransactionServiceImplTest {
 
     private AccountSummary activeAccountSummary(UUID id) {
         return AccountSummary.builder().accountId(id).status(AccountStatus.ACTIVE).currency("USD").build();
+    }
+
+    private ActiveTransactionLookup activeLookup(UUID transactionId, UUID categoryId) {
+        return new ActiveTransactionLookup() {
+            @Override public UUID getTransactionId() { return transactionId; }
+            @Override public UUID getCategoryId() { return categoryId; }
+        };
     }
 
     private AccountBalanceAggregate aggregate(UUID accountId, String currency,
