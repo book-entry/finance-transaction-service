@@ -5,6 +5,10 @@ import com.personal.finance.transaction.enums.EntryType;
 import com.personal.finance.transaction.repository.projection.AccountBalanceAggregate;
 import com.personal.finance.transaction.repository.projection.ActiveTransactionLookup;
 import com.personal.finance.transaction.repository.projection.CategoryCountProjection;
+import com.personal.finance.transaction.repository.projection.CategorySpendAggregate;
+import com.personal.finance.transaction.repository.projection.MerchantSpendAggregate;
+import com.personal.finance.transaction.repository.projection.MonthlyTypeAggregate;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
@@ -135,4 +139,155 @@ public interface TransactionRepository
             @Param("accountIds") Collection<UUID> accountIds,
             @Param("creditType") EntryType creditType,
             @Param("debitType") EntryType debitType);
+
+    // ── /v1/reports/summary aggregates ───────────────────────────────────
+    //
+    // Two variants (with / without {@code accountIds}) per query because
+    // JPQL {@code IN (:accountIds)} blows up on an empty/null collection.
+    // The service short-circuits the empty-list case and picks the right
+    // overload based on whether {@code accountIds} was supplied.
+
+    /**
+     * Distinct currencies present in any transaction up to {@code asOf} —
+     * drives the multi-currency banner / netWorth null-out logic in
+     * {@code GET /v1/reports/summary} (spec §3.1). Pulled once and reused
+     * across all aggregate sections.
+     */
+    @Query("SELECT DISTINCT t.currency FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL AND t.transactionDate <= :asOf")
+    List<String> findDistinctCurrencies(
+            @Param("userId") String userId,
+            @Param("asOf") LocalDate asOf);
+
+    @Query("SELECT DISTINCT t.currency FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL AND t.transactionDate <= :asOf "
+            + "AND t.accountId IN :accountIds")
+    List<String> findDistinctCurrenciesForAccounts(
+            @Param("userId") String userId,
+            @Param("asOf") LocalDate asOf,
+            @Param("accountIds") Collection<UUID> accountIds);
+
+    /**
+     * {@code spendByCategory} aggregate — DEBIT rows in
+     * {@code [from, to]} grouped by {@code category_id}. {@code null}
+     * categoryId rows surface as the uncategorised bucket.
+     */
+    @Query("SELECT t.categoryId AS categoryId, "
+            + "COALESCE(SUM(t.amount), 0) AS total, "
+            + "COUNT(t) AS txnCount "
+            + "FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "AND t.entryType = :debitType "
+            + "AND t.transactionDate BETWEEN :from AND :to "
+            + "GROUP BY t.categoryId")
+    List<CategorySpendAggregate> aggregateSpendByCategory(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to,
+            @Param("debitType") EntryType debitType);
+
+    @Query("SELECT t.categoryId AS categoryId, "
+            + "COALESCE(SUM(t.amount), 0) AS total, "
+            + "COUNT(t) AS txnCount "
+            + "FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "AND t.entryType = :debitType "
+            + "AND t.transactionDate BETWEEN :from AND :to "
+            + "AND t.accountId IN :accountIds "
+            + "GROUP BY t.categoryId")
+    List<CategorySpendAggregate> aggregateSpendByCategoryForAccounts(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to,
+            @Param("accountIds") Collection<UUID> accountIds,
+            @Param("debitType") EntryType debitType);
+
+    /**
+     * Single GROUP BY that powers both {@code incomeByMonth} (CREDIT) and
+     * {@code spendByMonth} (DEBIT) in one round-trip. The service pivots
+     * the rows into two zero-padded 12-entry arrays.
+     */
+    @Query("SELECT FUNCTION('YEAR', t.transactionDate) AS year, "
+            + "FUNCTION('MONTH', t.transactionDate) AS month, "
+            + "t.entryType AS entryType, "
+            + "COALESCE(SUM(t.amount), 0) AS total "
+            + "FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "AND t.transactionDate BETWEEN :from AND :to "
+            + "GROUP BY FUNCTION('YEAR', t.transactionDate), "
+            + "FUNCTION('MONTH', t.transactionDate), t.entryType")
+    List<MonthlyTypeAggregate> aggregateMonthlyByType(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to);
+
+    @Query("SELECT FUNCTION('YEAR', t.transactionDate) AS year, "
+            + "FUNCTION('MONTH', t.transactionDate) AS month, "
+            + "t.entryType AS entryType, "
+            + "COALESCE(SUM(t.amount), 0) AS total "
+            + "FROM Transaction t "
+            + "WHERE t.userId = :userId AND t.deletedAt IS NULL "
+            + "AND t.transactionDate BETWEEN :from AND :to "
+            + "AND t.accountId IN :accountIds "
+            + "GROUP BY FUNCTION('YEAR', t.transactionDate), "
+            + "FUNCTION('MONTH', t.transactionDate), t.entryType")
+    List<MonthlyTypeAggregate> aggregateMonthlyByTypeForAccounts(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to,
+            @Param("accountIds") Collection<UUID> accountIds);
+
+    /**
+     * {@code topMerchants} aggregate — single-query window-function pick
+     * so each returned merchant carries the description from its
+     * most-recent transaction (max {@code transaction_date}, tie-break
+     * {@code created_at DESC}). Aggregation key is {@code
+     * LOWER(TRIM(description))} so {@code "ParknShop"} and {@code "PARKNSHOP "}
+     * fold together. Blank / null descriptions excluded.
+     *
+     * <p>Native SQL because JPQL has no window functions; the equivalent
+     * portable two-step would cost an extra round-trip per call.
+     */
+    String TOP_MERCHANT_SQL_WHERE_BASE =
+            "  FROM transactions "
+            + " WHERE user_id = :userId AND deleted_at IS NULL "
+            + "   AND entry_type = :debitType "
+            + "   AND transaction_date BETWEEN :from AND :to "
+            + "   AND description IS NOT NULL "
+            + "   AND TRIM(description) <> '' ";
+
+    String TOP_MERCHANT_SQL_PROJECT =
+            "SELECT description, total, txnCount FROM ( "
+            + "  SELECT description, "
+            + "         SUM(amount) OVER (PARTITION BY LOWER(TRIM(description))) AS total, "
+            + "         COUNT(*)    OVER (PARTITION BY LOWER(TRIM(description))) AS txnCount, "
+            + "         ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(description)) "
+            + "                            ORDER BY transaction_date DESC, created_at DESC) AS rn ";
+
+    String TOP_MERCHANT_SQL_TAIL =
+            ") x WHERE rn = 1 "
+            + "ORDER BY total DESC, txnCount DESC "
+            + "LIMIT 5";
+
+    @Query(value = TOP_MERCHANT_SQL_PROJECT
+            + TOP_MERCHANT_SQL_WHERE_BASE
+            + TOP_MERCHANT_SQL_TAIL,
+            nativeQuery = true)
+    List<MerchantSpendAggregate> findTopMerchants(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to,
+            @Param("debitType") String debitType);
+
+    @Query(value = TOP_MERCHANT_SQL_PROJECT
+            + TOP_MERCHANT_SQL_WHERE_BASE
+            + "   AND account_id IN :accountIds "
+            + TOP_MERCHANT_SQL_TAIL,
+            nativeQuery = true)
+    List<MerchantSpendAggregate> findTopMerchantsForAccounts(
+            @Param("userId") String userId,
+            @Param("from") LocalDate from,
+            @Param("to") LocalDate to,
+            @Param("accountIds") Collection<UUID> accountIds,
+            @Param("debitType") String debitType);
 }
